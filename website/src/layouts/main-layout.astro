@@ -1,0 +1,49 @@
+---
+import Head from "./head.astro";
+import ThemeSwitcher from "../components/theme-switcher.astro";
+---
+
+<html lang="en">
+  <head>
+    <Head title="ktr - DSL for parametric sewing patterns" />
+  </head>
+  <body>
+    <header
+      class="sticky top-0 z-10 h-14 md:h-16 border-b border-transparent bg-background"
+    >
+      <nav class="h-full flex items-end justify-between py-2 md:py-3 px-4">
+        <a
+          href="/"
+          class="max-w-min text-primary hover:text-primary/70 active:text-primary/70 focus:text-primary/70"
+        >
+          <h1 class="text-3xl md:text-4xl font-display leading-[0.92]">ktr</h1>
+        </a>
+
+        <ul class="h-full flex items-end gap-3 md:gap-4">
+          <li>
+            <ThemeSwitcher />
+          </li>
+
+          <li>
+            <a
+              href="https://github.com/kutur-labs/ktr"
+              target="_blank"
+              class="text-xs md:text-sm text-primary-muted-foreground hover:text-primary-muted-foreground/70 active:text-primary-muted-foreground/70 focus:text-primary-muted-foreground/70"
+              >GitHub ↗</a
+            >
+          </li>
+
+          <li>
+            <a
+              href="/reference"
+              class="text-xs md:text-sm text-primary-muted-foreground hover:text-primary-muted-foreground/70 active:text-primary-muted-foreground/70 focus:text-primary-muted-foreground/70"
+              >Reference</a
+            >
+          </li>
+        </ul>
+      </nav>
+    </header>
+
+    <slot />
+  </body>
+</html>

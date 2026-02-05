@@ -1,0 +1,7 @@
+{
+	"name": "ktr",
+	"private": true,
+	"workspaces": [
+		"website"
+	]
+}

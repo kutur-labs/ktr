@@ -1,0 +1,105 @@
+---
+import { Code } from "astro:components";
+import MainLayout from "../layouts/main-layout.astro";
+import {
+  transformerNotationDiff,
+  transformerNotationHighlight,
+} from "@shikijs/transformers";
+import ktrDarkTheme from "../shiki/ktr-dark.json";
+import ktrLightTheme from "../shiki/ktr-light.json";
+import ktrGrammar from "../shiki/ktr.tmLanguage.json";
+
+const transformers = [
+  {
+    line(node: any, line: number) {
+      node.properties["data-line"] = line;
+    },
+  },
+  transformerNotationDiff(),
+  transformerNotationHighlight(),
+];
+
+const exampleCode = `input bust = 92cm {
+  assert bust > 60cm
+  assert bust < 150cm
+}
+
+input target_armhole = 44cm {
+  assert target_armhole > 30cm
+  assert target_armhole < 60cm
+}
+
+fn armhole_curve(depth: Length) {
+  let top = point(0cm, 0cm)
+  let side = point(bust / 8, -depth)
+
+  return bezier(
+    top,
+    top.down(depth / 2),
+    side.up(depth / 3),
+    side,
+  )
+}
+
+let depth = search (d: Length) {
+  bounds d [10cm .. 25cm]
+  tolerance 0.5cm
+  require armhole_curve(d).length == target_armhole
+}
+
+export armhole_curve(depth) as "Armhole"`;
+---
+
+<MainLayout>
+  <main
+    class="min-h-[calc(100dvh-4rem)] pt-1 md:pt-0 pb-16 flex items-start md:items-center justify-center"
+  >
+    <section
+      class="w-full md:w-auto px-4 py-8 flex flex-col md:flex-row items-start md:items-center md:justify-center gap-12 md:gap-4"
+    >
+      <div class="flex flex-col gap-4">
+        <h2 class="text-2xl md:text-3xl font-normal max-w-2xl text-balance">
+          <span class="text-primary">ktr</span> is a DSL for parametric sewing patterns
+          that compiles geometry and constraints into a diffable, runtime-independent
+          IR.
+        </h2>
+
+        <a href="/reference" class="w-full md:w-auto">
+          <button
+            class="cursor-pointer bg-primary text-primary-foreground hover:bg-primary/70 active:bg-primary/70 focus:bg-primary/70 py-1.5 px-3 w-full md:w-auto"
+          >
+            Get started
+          </button>
+        </a>
+      </div>
+
+      <div
+        class="flex flex-col items-start justify-center gap-1 w-full md:w-auto max-w-full overflow-x-auto"
+      >
+        <div class="flex items-center gap-1">
+          <svg
+            class="size-2 md:size-2.5"
+            viewBox="0 0 1178 1178"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
+              fill="#F60B1A"></path>
+          </svg>
+
+          <p class="text-primary-muted-foreground font-mono text-xs md:text-sm">
+            armhole_curve.ktr
+          </p>
+        </div>
+        <Code
+          class="border border-border text-xs md:text-sm w-full"
+          code={exampleCode}
+          lang={ktrGrammar as any}
+          themes={{ dark: ktrDarkTheme as any, light: ktrLightTheme as any }}
+          transformers={transformers}
+        />
+      </div>
+    </section>
+  </main>
+</MainLayout>

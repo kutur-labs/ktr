@@ -1,0 +1,149 @@
+---
+
+---
+
+<button
+  id="theme-toggle"
+  type="button"
+  class="flex text-sm items-center -translate-y-[0.3rem] text-primary-muted-foreground hover:text-primary-muted-foreground/70 active:text-primary-muted-foreground/70 focus:text-primary-muted-foreground/70"
+  aria-label="Toggle theme"
+>
+  <svg
+    id="theme-icon-light"
+    class="hidden size-[0.72rem] md:size-[0.85rem]"
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <circle cx="12" cy="12" r="4"></circle>
+    <path d="M12 2v2"></path>
+    <path d="M12 20v2"></path>
+    <path d="m4.93 4.93 1.41 1.41"></path>
+    <path d="m17.66 17.66 1.41 1.41"></path>
+    <path d="M2 12h2"></path>
+    <path d="M20 12h2"></path>
+    <path d="m6.34 17.66-1.41 1.41"></path>
+    <path d="m19.07 4.93-1.41 1.41"></path>
+  </svg>
+  <svg
+    id="theme-icon-dark"
+    class="hidden size-[0.72rem] md:size-[0.85rem]"
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+  </svg>
+  <svg
+    id="theme-icon-system"
+    class="hidden size-[0.72rem] md:size-[0.85rem]"
+    xmlns="http://www.w3.org/2000/svg"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+    <line x1="8" x2="16" y1="21" y2="21"></line>
+    <line x1="12" x2="12" y1="17" y2="21"></line>
+  </svg>
+</button>
+
+<script>
+  function initThemeSwitcher() {
+    const toggle = document.getElementById("theme-toggle");
+    const iconLight = document.getElementById("theme-icon-light");
+    const iconDark = document.getElementById("theme-icon-dark");
+    const iconSystem = document.getElementById("theme-icon-system");
+
+    const themes = ["light", "dark", "system"] as const;
+    type Theme = (typeof themes)[number];
+
+    function getStoredTheme(): Theme {
+      return (localStorage.getItem("theme") as Theme) || "system";
+    }
+
+    function getSystemTheme(): "light" | "dark" {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+    }
+
+    function updateIcon(theme: Theme) {
+      iconLight?.classList.add("hidden");
+      iconDark?.classList.add("hidden");
+      iconSystem?.classList.add("hidden");
+
+      const themeLabels: Record<Theme, string> = {
+        light: "Light",
+        dark: "Dark",
+        system: "System",
+      };
+
+      if (theme === "light") {
+        iconLight?.classList.remove("hidden");
+      } else if (theme === "dark") {
+        iconDark?.classList.remove("hidden");
+      } else {
+        iconSystem?.classList.remove("hidden");
+      }
+
+      toggle?.setAttribute(
+        "aria-label",
+        `Toggle theme (current: ${themeLabels[theme]})`,
+      );
+    }
+
+    function applyTheme(theme: Theme) {
+      const effectiveTheme = theme === "system" ? getSystemTheme() : theme;
+
+      if (effectiveTheme === "dark") {
+        document.documentElement.classList.add("dark");
+      } else {
+        document.documentElement.classList.remove("dark");
+      }
+
+      updateIcon(theme);
+    }
+
+    function cycleTheme() {
+      const current = getStoredTheme();
+      const currentIndex = themes.indexOf(current);
+      const nextIndex = (currentIndex + 1) % themes.length;
+      const next = themes[nextIndex];
+      localStorage.setItem("theme", next);
+      applyTheme(next);
+    }
+
+    // Initialize
+    applyTheme(getStoredTheme());
+
+    // Cycle on click
+    toggle?.addEventListener("click", cycleTheme);
+
+    // Listen for system theme changes
+    window
+      .matchMedia("(prefers-color-scheme: dark)")
+      .addEventListener("change", () => {
+        if (getStoredTheme() === "system") {
+          applyTheme("system");
+        }
+      });
+  }
+
+  // Run on initial load
+  initThemeSwitcher();
+
+  // Re-run after Astro page transitions
+  document.addEventListener("astro:after-swap", initThemeSwitcher);
+</script>

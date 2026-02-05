@@ -1,0 +1,44 @@
+---
+import { getCollection, type CollectionEntry } from "astro:content";
+import ReferenceLayout from "../layouts/reference-layout.astro";
+
+const docs = await getCollection("reference");
+const sortedDocs = docs.sort(
+  (a: CollectionEntry<"reference">, b: CollectionEntry<"reference">) =>
+    a.data.order - b.data.order,
+);
+
+// Build TOC from all docs
+const toc: { depth: number; slug: string; text: string }[] = [];
+
+for (const doc of sortedDocs) {
+  const { headings } = await doc.render();
+  for (const heading of headings) {
+    if (heading.depth <= 2) {
+      toc.push({
+        depth: heading.depth,
+        slug: heading.slug,
+        text: heading.text,
+      });
+    }
+  }
+}
+
+// Render all docs
+const renderedDocs = await Promise.all(
+  sortedDocs.map(async (doc: CollectionEntry<"reference">) => {
+    const { Content } = await doc.render();
+    return { slug: doc.slug, Content };
+  }),
+);
+---
+
+<ReferenceLayout toc={toc}>
+  {
+    renderedDocs.map(({ slug, Content }) => (
+      <section id={slug}>
+        <Content />
+      </section>
+    ))
+  }
+</ReferenceLayout>

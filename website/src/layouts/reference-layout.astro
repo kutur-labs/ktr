@@ -1,0 +1,142 @@
+---
+import Head from "./head.astro";
+import ThemeSwitcher from "../components/theme-switcher.astro";
+
+interface TocItem {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
+interface Props {
+  toc: TocItem[];
+}
+
+const { toc } = Astro.props;
+---
+
+<html lang="en">
+  <head>
+    <Head title="Reference - ktr" />
+  </head>
+  <body>
+    <header
+      class="sticky top-0 z-10 h-14 md:h-16 bg-background border-b border-border"
+    >
+      <nav class="h-full flex items-end justify-between py-2 md:py-3 px-4">
+        <a
+          href="/"
+          class="max-w-min text-primary hover:text-primary/70 active:text-primary/70 focus:text-primary/70"
+        >
+          <h1 class="text-3xl md:text-4xl font-display leading-[0.92]">ktr</h1>
+        </a>
+
+        <ul class="h-full flex items-end gap-3 md:gap-4">
+          <li>
+            <ThemeSwitcher />
+          </li>
+
+          <li>
+            <a
+              href="https://github.com/kutur-labs/ktr"
+              target="_blank"
+              class="text-xs md:text-sm text-primary-muted-foreground hover:text-primary-muted-foreground/70 active:text-primary-muted-foreground/70 focus:text-primary-muted-foreground/70"
+              >GitHub ↗</a
+            >
+          </li>
+
+          <li>
+            <a
+              href="/reference"
+              class="text-xs md:text-sm text-primary-muted-foreground hover:text-primary-muted-foreground/70 active:text-primary-muted-foreground/70 focus:text-primary-muted-foreground/70"
+              >Reference</a
+            >
+          </li>
+        </ul>
+      </nav>
+    </header>
+
+    <div class="flex flex-col md:flex-row">
+      <aside
+        class="sticky top-14 md:top-16 z-10 bg-background border-b md:border-b-0 md:border-r border-border overflow-x-auto md:overflow-y-auto md:h-[calc(100vh-4rem)] w-full md:w-52 shrink-0 py-2 px-4 md:py-3"
+      >
+        <nav
+          class="flex flex-row md:flex-col gap-3 md:gap-0.5 text-sm whitespace-nowrap md:whitespace-normal"
+        >
+          {
+            toc.map((item) => (
+              <a
+                href={`#${item.slug}`}
+                class:list={[
+                  "text-foreground/70 hover:text-foreground py-0.5",
+                  item.depth === 2 && "md:pl-3",
+                  item.depth === 3 &&
+                    "hidden md:block md:pl-6 text-foreground/50",
+                ]}
+              >
+                {item.text}
+              </a>
+            ))
+          }
+        </nav>
+      </aside>
+
+      <main class="flex-1 min-w-0 py-6 px-4 md:py-8 md:px-8 prose">
+        <slot />
+      </main>
+    </div>
+  </body>
+</html>
+
+<style is:global>
+  @reference "../styles/global.css";
+
+  .prose h1 {
+    @apply text-2xl font-normal mt-12 mb-4 pt-4 border-t border-border scroll-mt-28 md:scroll-mt-20;
+  }
+  .prose h1:first-child {
+    @apply mt-0 pt-0 border-t-0;
+  }
+  .prose h2 {
+    @apply text-xl font-normal mt-8 mb-3 scroll-mt-28 md:scroll-mt-20;
+  }
+  .prose h3 {
+    @apply text-lg font-normal mt-6 mb-2 scroll-mt-28 md:scroll-mt-20;
+  }
+  .prose p {
+    @apply my-3 text-foreground/80 leading-relaxed;
+  }
+  .prose code {
+    @apply bg-foreground/10 px-1.5 py-0.5 rounded text-sm;
+  }
+  .prose pre {
+    @apply bg-foreground/5 border border-border rounded-lg p-4 my-4 overflow-x-auto;
+  }
+  .prose pre code {
+    @apply bg-transparent p-0 text-sm;
+  }
+  .prose strong {
+    @apply font-normal;
+  }
+  .prose dl {
+    @apply my-4;
+  }
+  .prose dt {
+    @apply font-normal;
+  }
+  .prose dd {
+    @apply ml-4 text-foreground/70 mb-2;
+  }
+  .prose ul {
+    @apply my-3 pl-6 list-disc;
+  }
+  .prose ol {
+    @apply my-3 pl-6 list-decimal;
+  }
+  .prose li {
+    @apply my-1 text-foreground/80;
+  }
+  .prose li::marker {
+    @apply text-foreground/40;
+  }
+</style>

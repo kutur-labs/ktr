@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+@font-face {
+    font-family: "ABC Galapagos";
+    src: url("/abcgalapagosc-black.woff2") format("woff2");
+    font-weight: 900;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Basier Square";
+    src: url("/basiersquare-regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+    
+}
+
+@font-face {
+    font-family: "Basier Square";
+    src: url("/basiersquare-medium.woff2") format("woff2");
+    font-weight: 500;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Basier Square";
+    src: url("/basiersquare-semibold.woff2") format("woff2");
+    font-weight: 600;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: "Basier Square";
+    src: url("/basiersquare-bold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+}
+
+/* https://www.tints.dev/palette/v1:cHJpbWFyeXxGOTAwMUJ8NTAwfHB8MHwwfDB8MTAzfG0 */
+:root {
+    --color-primary-50: oklch(0.985 0.008 17.52);
+    --color-primary-100: oklch(0.943 0.029 17.73);
+    --color-primary-200: oklch(0.863 0.074 17.68);
+    --color-primary-300: oklch(0.774 0.133 19.45);
+    --color-primary-400: oklch(0.696 0.195 22.29);
+    --color-primary-500: oklch(0.618 0.252 27.18);
+    --color-primary-600: oklch(0.526 0.214 27.11);
+    --color-primary-700: oklch(0.425 0.173 27.12);
+    --color-primary-800: oklch(0.336 0.137 27.12);
+    --color-primary-900: oklch(0.236 0.096 27.19);
+    --color-primary-950: oklch(0.187 0.076 27.18);
+
+    --background: var(--color-primary-50);
+    --foreground: var(--color-primary-950);
+    --primary: var(--color-primary-500);
+    --primary-foreground: var(--color-primary-50);
+    --primary-muted: oklch(from var(--color-primary-600) l calc(c * 0.5) h / 0.15);
+    --primary-muted-foreground: oklch(from var(--color-primary-600) l calc(c * 0.5) h / 0.9);
+    --border: oklch(from var(--color-primary-600) l c h / 0.15);
+}
+
+.dark {
+    --background: oklch(from var(--color-primary-950) l calc(c * 0.15) h);
+    --foreground: var(--color-primary-50);
+    --primary: var(--color-primary-500);
+    --primary-foreground: var(--color-primary-50);
+    --primary-muted: oklch(from var(--color-primary-300) l calc(c * 0.5) h / 0.1);
+    --primary-muted-foreground: oklch(from var(--color-primary-300) l calc(c * 0.5) h / 0.85);
+    --border: oklch(from var(--color-primary-300) l c h / 0.1);
+}
+
+@theme inline {
+    --font-sans: "Basier Square", ui-sans-serif, system-ui, sans-serif;
+    --font-display: "ABC Galapagos", ui-serif, Georgia, serif;
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary-muted: var(--primary-muted);
+    --color-primary-muted-foreground: var(--primary-muted-foreground);
+    --color-border: var(--border);
+}
+
+@layer base {
+    ::selection {
+        background-color: var(--primary);
+        color: var(--primary-foreground);
+    }
+    
+    * {
+        @apply outline-primary/50;
+    }
+    
+    body {
+        @apply bg-background text-foreground;
+    }
+
+    html {
+        @apply bg-background text-foreground font-sans tracking-tight;
+    }
+
+    .font-display {
+        @apply tracking-normal;
+    }
+
+    /* Shiki dual theme support
+       Light mode uses inline styles directly (no override needed)
+       Dark mode overrides with --shiki-dark CSS variables */
+    pre.astro-code {
+        border-radius: 0 !important;
+        padding: 0.5rem 0.5rem !important;
+    }
+
+    pre.astro-code code {
+        display: grid;
+        counter-reset: line;
+    }
+
+    pre.astro-code .line {
+        display: inline-block;
+        width: 100%;
+    }
+
+    pre.astro-code .line::before {
+        content: attr(data-line);
+        display: inline-block;
+        width: 2ch;
+        margin-right: 2ch;
+        text-align: right;
+        opacity: 0.4;
+    }
+
+    .dark pre.astro-code {
+        background-color: var(--background) !important;
+    }
+
+    .dark pre.astro-code,
+    .dark pre.astro-code span {
+        color: var(--shiki-dark) !important;
+    }
+
+    /* Shiki transformer: highlighted lines */
+    pre.astro-code .line.highlighted {
+        background-color: oklch(0.7 0.15 60 / 0.15);
+    }
+
+    .dark pre.astro-code .line.highlighted {
+        background-color: oklch(0.7 0.15 60 / 0.2);
+    }
+
+    /* Shiki transformer: diff lines */
+    pre.astro-code .line.diff.add {
+        background-color: oklch(0.7 0.2 145 / 0.15);
+    }
+
+    pre.astro-code .line.diff.remove {
+        background-color: oklch(0.65 0.2 25 / 0.15);
+    }
+
+    .dark pre.astro-code .line.diff.add {
+        background-color: oklch(0.5 0.15 145 / 0.25);
+    }
+
+    .dark pre.astro-code .line.diff.remove {
+        background-color: oklch(0.5 0.15 25 / 0.25);
+    }
+
+    /* Diff symbols */
+    pre.astro-code .line.diff.add::after {
+        content: '+';
+        position: absolute;
+        left: 0.5ch;
+        color: oklch(0.6 0.2 145);
+    }
+
+    pre.astro-code .line.diff.remove::after {
+        content: '-';
+        position: absolute;
+        left: 0.5ch;
+        color: oklch(0.6 0.2 25);
+    }
+
+    pre.astro-code .line.diff {
+        position: relative;
+        padding-left: 2ch;
+    }
+  }
