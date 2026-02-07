@@ -69,6 +69,14 @@ website/           Documentation site (Astro)
 ## Building
 
 The compiler requires [Zig](https://ziglang.org/) (0.14+).
+The WASM build also requires [`wasm-opt`](https://github.com/WebAssembly/binaryen) from Binaryen for post-processing optimisations:
+
+```sh
+# macOS
+brew install binaryen
+
+# or grab a release from https://github.com/WebAssembly/binaryen/releases
+```
 
 ```sh
 cd ktrc
@@ -89,7 +97,7 @@ zig build run -- decompile output.ktrir
 # Pipe through both directions
 cat file.ktr | zig build run -- compile | zig build run -- decompile
 
-# Build the WASM module
+# Build the WASM module (requires wasm-opt from Binaryen)
 zig build wasm
 ```
 

@@ -46,6 +46,11 @@ pub fn build(b: *std.Build) void {
             .os_tag = .freestanding,
         }),
         .optimize = .ReleaseSmall,
+        .strip = true, // strip debug info & DWARF
+        .single_threaded = true, // no threading overhead
+        .unwind_tables = .none, // no unwind tables needed in freestanding wasm
+        .error_tracing = false, // no error return traces
+        .omit_frame_pointer = true, // smaller call frames
     });
 
     const wasm = b.addExecutable(.{
@@ -55,7 +60,24 @@ pub fn build(b: *std.Build) void {
     wasm.entry = .disabled;
     wasm.rdynamic = true;
 
-    const install_wasm = b.addInstallArtifact(wasm, .{});
+    // ── wasm-opt post-processing (binaryen) ───────────────────
+    // Runs `wasm-opt -Oz` for WASM-specific size optimisations
+    // that Zig's codegen doesn't perform (~9% smaller output).
+
+    const wasm_opt = b.addSystemCommand(&.{
+        "wasm-opt",
+        "-Oz", // aggressive size optimisation
+        "--zero-filled-memory", // memory is zero-initialized
+        "--enable-bulk-memory", // Zig emits memory.copy/fill
+        "--enable-nontrapping-float-to-int", // Zig emits trunc_sat
+        "--enable-sign-ext", // Zig emits sign-extension ops
+        "--enable-mutable-globals", // Zig emits mutable globals
+    });
+    wasm_opt.addFileArg(wasm.getEmittedBin());
+    wasm_opt.addArg("-o");
+    const optimized_wasm = wasm_opt.addOutputFileArg("ktrc.wasm");
+
+    const install_wasm = b.addInstallBinFile(optimized_wasm, "ktrc.wasm");
     const wasm_step = b.step("wasm", "Build ktrc WASM module");
     wasm_step.dependOn(&install_wasm.step);
 }
