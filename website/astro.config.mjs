@@ -14,6 +14,7 @@ const ktrLightTheme = JSON.parse(fs.readFileSync('./src/shiki/ktr-light.json', '
 // https://astro.build/config
 export default defineConfig({
   output: 'static', // Pre-render all pages at build time
+  prefetch: true,
   markdown: {
     shikiConfig: {
       themes: {
