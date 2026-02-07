@@ -3,6 +3,9 @@ dist/
 # generated types
 .astro/
 
+# synced from ktrc/spec/ at build time
+src/content/reference/02-language-reference.md
+
 # dependencies
 node_modules/
 

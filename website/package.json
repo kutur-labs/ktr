@@ -4,8 +4,10 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
+    "sync-spec": "cp ../ktrc/spec/lang.md src/content/reference/02-language-reference.md",
+    "build:wasm": "cd ../ktrc && zig build wasm && cp zig-out/bin/ktrc.wasm ../website/public/ktrc.wasm",
+    "dev": "bun run sync-spec && astro dev",
+    "build": "bun run sync-spec && astro build",
     "preview": "astro preview",
     "astro": "astro"
   },

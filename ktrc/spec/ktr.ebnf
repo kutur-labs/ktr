@@ -1,0 +1,166 @@
+(* ================================================================== *)
+(* ktr source language v0.1 -- Extended Backus-Naur Form              *)
+(*                                                                    *)
+(* A domain-specific language for parametric pattern drafting.        *)
+(* ================================================================== *)
+
+
+(* ------------------------------------------------------------------ *)
+(* Program                                                             *)
+(* ------------------------------------------------------------------ *)
+
+program          = { statement } ;
+
+statement        = let_statement
+                 | input_decl
+                 | fn_def
+                 | export_stmt ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Let bindings                                                        *)
+(* ------------------------------------------------------------------ *)
+
+let_statement    = "let" , IDENT , "=" , expression ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Input declarations                                                  *)
+(* ------------------------------------------------------------------ *)
+
+input_decl       = "input" , IDENT , "=" , expression ,
+                   [ "{" , { assert_stmt } , "}" ] ;
+
+assert_stmt      = "assert" , IDENT , cmp_op , expression ;
+
+cmp_op           = "==" | "!=" | ">" | "<" | ">=" | "<=" ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Function definitions                                                *)
+(* ------------------------------------------------------------------ *)
+
+fn_def           = "fn" , IDENT , "(" , [ param_list ] , ")" ,
+                   "{" , fn_body , "}" ;
+
+param_list       = param , { "," , param } ;
+
+param            = IDENT , ":" , type_name ;
+
+fn_body          = { let_statement } , return_stmt ;
+
+return_stmt      = "return" , expression ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Search (solver) blocks                                              *)
+(* ------------------------------------------------------------------ *)
+
+(* A search is an expression, appearing as the RHS of a let binding:  *)
+(*   let tweak = search (t: f64) { ... }                              *)
+
+search_expr      = "search" , "(" , param , ")" ,
+                   "{" , search_body , "}" ;
+
+search_body      = bounds_clause ,
+                   tolerance_clause ,
+                   require_clause ;
+
+bounds_clause    = "bounds" , IDENT ,
+                   "[" , expression , ".." , expression , "]" ;
+
+tolerance_clause = "tolerance" , expression ;
+
+require_clause   = "require" , expression , cmp_op , expression ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Export statements                                                   *)
+(* ------------------------------------------------------------------ *)
+
+export_stmt      = "export" , expression , "as" , STRING ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Expressions                                                         *)
+(*                                                                    *)
+(* Precedence (lowest to highest):                                    *)
+(*   1. additive:        +  -        left-associative                 *)
+(*   2. multiplicative:  *  /        left-associative                 *)
+(*   3. unary:           -           prefix                           *)
+(*   4. postfix:         .method()   left-associative                 *)
+(* ------------------------------------------------------------------ *)
+
+expression       = additive_expr ;
+
+additive_expr    = multiplicative_expr ,
+                   { ( "+" | "-" ) , multiplicative_expr } ;
+
+multiplicative_expr
+                 = unary_expr ,
+                   { ( "*" | "/" ) , unary_expr } ;
+
+unary_expr       = [ "-" ] , postfix_expr ;
+
+postfix_expr     = primary_expr , { method_call } ;
+
+method_call      = "." , IDENT , "(" , [ arg_list ] , ")" ;
+
+primary_expr     = DIMENSION                         (* 100mm              *)
+                 | PERCENTAGE                        (* 50%                *)
+                 | NUMBER                            (* 42, 3.14           *)
+                 | fn_call                           (* point(x, y)        *)
+                 | search_expr                       (* search (t) { ... } *)
+                 | IDENT                             (* head               *)
+                 | "(" , expression , ")" ;          (* grouping           *)
+
+fn_call          = IDENT , "(" , [ arg_list ] , ")" ;
+
+arg_list         = expression , { "," , expression } ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Type names                                                          *)
+(* ------------------------------------------------------------------ *)
+
+type_name        = "f64"
+                 | "length"
+                 | "percentage"
+                 | "point"
+                 | "bezier"
+                 | "bool" ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Lexical grammar                                                     *)
+(* ------------------------------------------------------------------ *)
+
+LETTER           = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H"
+                 | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P"
+                 | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X"
+                 | "Y" | "Z"
+                 | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h"
+                 | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p"
+                 | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x"
+                 | "y" | "z" ;
+
+DIGIT            = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7"
+                 | "8" | "9" ;
+
+IDENT            = ( LETTER | "_" ) , { LETTER | DIGIT | "_" } ;
+
+INTEGER          = DIGIT , { DIGIT } ;
+
+NUMBER           = [ "-" ] , DIGIT , { DIGIT } , [ "." , DIGIT , { DIGIT } ] ;
+
+UNIT             = "mm" | "cm" ;
+
+DIMENSION        = NUMBER , UNIT ;
+
+PERCENTAGE       = NUMBER , "%" ;
+
+STRING           = '"' , { ANY - '"' } , '"' ;
+
+(* Keywords (reserved, cannot be used as identifiers):                *)
+(* let  input  fn  return  search  bounds  tolerance                  *)
+(* require  export  as  assert                                        *)

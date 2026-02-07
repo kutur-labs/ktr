@@ -1,0 +1,583 @@
+---
+import MainLayout from "../layouts/main-layout.astro";
+
+const defaultCode = `let a = 100mm
+let b = 50%
+let c = 42.2
+let d = a`;
+---
+
+<MainLayout headerBorder>
+  <main class="flex flex-col" style="height: calc(100dvh - 4rem);">
+    <div class="flex flex-col md:flex-row flex-1 min-h-0">
+      <!-- Left pane: .ktr source editor -->
+      <div
+        class="flex-1 flex flex-col min-h-0 min-w-0 md:border-r border-border overflow-hidden"
+      >
+        <div
+          class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border shrink-0"
+        >
+          <svg
+            class="size-2 md:size-2.5"
+            viewBox="0 0 1178 1178"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
+              fill="currentColor"
+              class="text-primary"></path>
+          </svg>
+          <span class="text-xs font-mono text-primary-muted-foreground"
+            >source.ktr</span
+          >
+        </div>
+        <div id="editor-input" class="flex-1 min-h-0 overflow-hidden"></div>
+      </div>
+
+      <!-- Right pane: .ktrir output -->
+      <div
+        class="flex-1 flex flex-col min-h-0 min-w-0 border-t md:border-t-0 border-border overflow-hidden"
+      >
+        <div
+          class="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0"
+        >
+          <div class="flex items-center gap-1.5">
+            <svg
+              class="size-2 md:size-2.5"
+              viewBox="0 0 1178 1178"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
+                fill="currentColor"
+                class="text-primary"></path>
+            </svg>
+            <span class="text-xs font-mono text-primary-muted-foreground"
+              >output.ktrir</span
+            >
+          </div>
+          <span
+            id="status"
+            class="text-[10px] font-mono text-primary-muted-foreground/50"
+          ></span>
+        </div>
+        <div id="editor-output" class="flex-1 min-h-0 overflow-hidden"></div>
+      </div>
+    </div>
+
+    <!-- Error bar -->
+    <div
+      id="error-bar"
+      class="hidden px-3 py-2 border-t border-primary/20 text-primary text-xs font-mono whitespace-pre-wrap shrink-0 max-h-24 overflow-auto"
+    >
+    </div>
+  </main>
+</MainLayout>
+
+<!-- Default code passed from Astro frontmatter -->
+<script
+  id="default-code"
+  type="application/json"
+  set:html={JSON.stringify(defaultCode)}
+/>
+
+<style is:global>
+  .monaco-editor .hover-row.status-bar .actions a {
+    color: var(--primary) !important;
+  }
+</style>
+
+<!-- Monaco AMD loader from CDN -->
+<script
+  is:inline
+  src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"
+></script>
+
+<script is:inline>
+  // ─── Monaco setup ─────────────────────────────────────────────────────────
+
+  var MONACO_CDN = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs";
+
+  require.config({ paths: { vs: MONACO_CDN } });
+
+  window.MonacoEnvironment = {
+    getWorkerUrl: function () {
+      return (
+        "data:text/javascript;charset=utf-8," +
+        encodeURIComponent(
+          'self.MonacoEnvironment={baseUrl:"' +
+            MONACO_CDN +
+            '/"};importScripts("' +
+            MONACO_CDN +
+            '/base/worker/workerMain.js");',
+        )
+      );
+    },
+  };
+
+  // ─── WASM ─────────────────────────────────────────────────────────────────
+
+  var wasm = null;
+  var encoder = new TextEncoder();
+  var decoder = new TextDecoder();
+
+  function loadWasm() {
+    return WebAssembly.instantiateStreaming(fetch("/ktrc.wasm"), {}).then(
+      function (result) {
+        return result.instance.exports;
+      },
+    );
+  }
+
+  function writeToWasm(text) {
+    var encoded = encoder.encode(text);
+    var ptr = wasm.alloc(encoded.length);
+    if (ptr === 0) throw new Error("WASM alloc failed");
+    new Uint8Array(wasm.memory.buffer, ptr, encoded.length).set(encoded);
+    return { ptr: ptr, len: encoded.length };
+  }
+
+  function readFromWasm(ptr, len) {
+    if (ptr === 0 || len === 0) return "";
+    return decoder.decode(new Uint8Array(wasm.memory.buffer, ptr, len));
+  }
+
+  function compileKtr(source) {
+    var input = writeToWasm(source);
+    try {
+      var result = wasm.compile(input.ptr, input.len);
+      if (result >= 0) {
+        return {
+          ok: true,
+          output: readFromWasm(wasm.get_output_ptr(), result),
+        };
+      } else {
+        var errPtr = wasm.get_error_ptr();
+        var errLen = wasm.get_error_len();
+        return {
+          ok: false,
+          error: readFromWasm(errPtr, errLen) || "Compilation failed",
+        };
+      }
+    } finally {
+      wasm.dealloc(input.ptr, input.len);
+    }
+  }
+
+  function decompileIr(irSource) {
+    var input = writeToWasm(irSource);
+    try {
+      var result = wasm.decompile_ir(input.ptr, input.len);
+      if (result >= 0) {
+        return {
+          ok: true,
+          output: readFromWasm(wasm.get_output_ptr(), result),
+        };
+      } else {
+        var errPtr = wasm.get_error_ptr();
+        var errLen = wasm.get_error_len();
+        return {
+          ok: false,
+          error: readFromWasm(errPtr, errLen) || "Decompilation failed",
+        };
+      }
+    } finally {
+      wasm.dealloc(input.ptr, input.len);
+    }
+  }
+
+  // ─── Monaco initialization ────────────────────────────────────────────────
+
+  require(["vs/editor/editor.main"], function () {
+    // Register ktr language
+    monaco.languages.register({ id: "ktr" });
+    monaco.languages.setMonarchTokensProvider("ktr", {
+      keywords: [
+        "input",
+        "fn",
+        "let",
+        "return",
+        "require",
+        "export",
+        "search",
+        "assert",
+        "as",
+      ],
+      searchKeywords: ["bounds", "initial", "tolerance"],
+      typeKeywords: ["mm", "cm", "f64", "i64", "bool"],
+
+      tokenizer: {
+        root: [
+          [/\/\/.*$/, "comment"],
+          [/"(?:[^"\\]|\\.)*"/, "string"],
+          [/\b\d+(\.\d+)?(mm|cm)\b/, "number.unit"],
+          [/\b\d+(\.\d+)?%/, "number.percentage"],
+          [/\b\d+\.\d+\b/, "number.float"],
+          [/\b\d+\b/, "number"],
+          [
+            /[a-zA-Z_]\w*/,
+            {
+              cases: {
+                "@keywords": "keyword",
+                "@searchKeywords": "keyword.other",
+                "@typeKeywords": "type",
+                "@default": "identifier",
+              },
+            },
+          ],
+          [/==|!=|<=|>=|<|>/, "operator"],
+          [/[+\-*/]/, "operator"],
+          [/\.\./, "operator"],
+          [/=/, "operator"],
+          [/[{}()\[\]]/, "delimiter.bracket"],
+          [/[:,]/, "delimiter"],
+          [/\./, "delimiter"],
+        ],
+      },
+    });
+
+    // Register ktrir language
+    monaco.languages.register({ id: "ktrir" });
+    monaco.languages.setMonarchTokensProvider("ktrir", {
+      tokenizer: {
+        root: [
+          [/#.*$/, "comment"],
+          [/%[a-zA-Z_]\w*/, "variable"],
+          [/\b(length|percentage|f64)\b/, "type"],
+          [/\b\d+(\.\d+)?(mm|cm)\b/, "number.unit"],
+          [/\b\d+\.\d+\b/, "number.float"],
+          [/\b\d+\b/, "number"],
+          [/:/, "delimiter"],
+          [/=/, "operator"],
+        ],
+      },
+    });
+
+    // ── Themes ────────────────────────────────────────────────────────────────
+
+    monaco.editor.defineTheme("ktr-light", {
+      base: "vs",
+      inherit: false,
+      rules: [
+        { token: "comment", foreground: "998888" },
+        { token: "string", foreground: "B87333" },
+        { token: "keyword", foreground: "C41E3A" },
+        { token: "keyword.other", foreground: "C41E3A" },
+        { token: "type", foreground: "986801" },
+        { token: "number", foreground: "B76B01" },
+        { token: "number.unit", foreground: "B76B01" },
+        { token: "number.float", foreground: "B76B01" },
+        { token: "number.percentage", foreground: "B76B01" },
+        { token: "operator", foreground: "5C4444" },
+        { token: "delimiter", foreground: "5C4444" },
+        { token: "delimiter.bracket", foreground: "5C4444" },
+        { token: "variable", foreground: "C41E3A" },
+        { token: "identifier", foreground: "3D2323" },
+        { token: "", foreground: "3D2323" },
+      ],
+      colors: {
+        "editor.background": "#00000000",
+        "editor.foreground": "#3D2323",
+        "editor.lineHighlightBackground": "#00000006",
+        "editorLineNumber.foreground": "#99888866",
+        "editorLineNumber.activeForeground": "#99888899",
+        "editorCursor.foreground": "#C41E3A",
+        "editor.selectionBackground": "#C41E3A30",
+        "editor.inactiveSelectionBackground": "#C41E3A15",
+        "editorIndentGuide.background": "#00000008",
+        focusBorder: "#00000000",
+        "editorHoverWidget.background": "#FDF8F6",
+        "editorHoverWidget.border": "#3D232318",
+        "editorHoverWidget.foreground": "#3D2323",
+        "editorHoverWidget.statusBarBackground": "#F5EEEB",
+        "editorMarkerNavigation.background": "#FDF8F6",
+        "editorMarkerNavigationError.background": "#C41E3A20",
+      },
+    });
+
+    monaco.editor.defineTheme("ktr-dark", {
+      base: "vs-dark",
+      inherit: false,
+      rules: [
+        { token: "comment", foreground: "7F8C8D" },
+        { token: "string", foreground: "E8A87C" },
+        { token: "keyword", foreground: "D66A57" },
+        { token: "keyword.other", foreground: "D66A57" },
+        { token: "type", foreground: "E5C07B" },
+        { token: "number", foreground: "D19A66" },
+        { token: "number.unit", foreground: "D19A66" },
+        { token: "number.float", foreground: "D19A66" },
+        { token: "number.percentage", foreground: "D19A66" },
+        { token: "operator", foreground: "ABB2BF" },
+        { token: "delimiter", foreground: "ABB2BF" },
+        { token: "delimiter.bracket", foreground: "ABB2BF" },
+        { token: "variable", foreground: "D66A57" },
+        { token: "identifier", foreground: "E0D6C8" },
+        { token: "", foreground: "E0D6C8" },
+      ],
+      colors: {
+        "editor.background": "#00000000",
+        "editor.foreground": "#E0D6C8",
+        "editor.lineHighlightBackground": "#FFFFFF06",
+        "editorLineNumber.foreground": "#ABB2BF44",
+        "editorLineNumber.activeForeground": "#ABB2BF77",
+        "editorCursor.foreground": "#D66A57",
+        "editor.selectionBackground": "#D66A5730",
+        "editor.inactiveSelectionBackground": "#D66A5715",
+        "editorIndentGuide.background": "#FFFFFF08",
+        focusBorder: "#00000000",
+        "editorHoverWidget.background": "#1F1212",
+        "editorHoverWidget.border": "#E0D6C815",
+        "editorHoverWidget.foreground": "#E0D6C8",
+        "editorHoverWidget.statusBarBackground": "#291818",
+        "editorMarkerNavigation.background": "#1F1212",
+        "editorMarkerNavigationError.background": "#D66A5720",
+      },
+    });
+
+    // ── Detect current theme ──────────────────────────────────────────────────
+
+    function isDark() {
+      return document.documentElement.classList.contains("dark");
+    }
+
+    function currentTheme() {
+      return isDark() ? "ktr-dark" : "ktr-light";
+    }
+
+    // ── Read default code ──────────────────────────────────────────────────────
+
+    var defaultCode = JSON.parse(
+      document.getElementById("default-code").textContent,
+    );
+
+    // ── Shared editor options ──────────────────────────────────────────────────
+
+    var isMobile = window.matchMedia("(max-width: 767px)").matches;
+
+    var sharedOptions = {
+      fontSize: isMobile ? 12 : 13,
+      fontFamily:
+        "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace",
+      lineHeight: isMobile ? 18 : 20,
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      renderLineHighlight: "none",
+      overviewRulerLanes: 0,
+      hideCursorInOverviewRuler: true,
+      overviewRulerBorder: false,
+      scrollbar: {
+        vertical: "auto",
+        horizontal: "auto",
+        useShadows: false,
+        verticalScrollbarSize: 8,
+        horizontalScrollbarSize: 8,
+      },
+      padding: { top: 12, bottom: 12 },
+      glyphMargin: false,
+      folding: false,
+      lineNumbersMinChars: 3,
+      contextmenu: false,
+      quickSuggestions: false,
+      suggestOnTriggerCharacters: false,
+      parameterHints: { enabled: false },
+      wordBasedSuggestions: "off",
+      hover: { enabled: true, above: true },
+      lightbulb: { enabled: "off" },
+      codeLens: false,
+    };
+
+    // ── Create editors ────────────────────────────────────────────────────────
+
+    var inputEditor = monaco.editor.create(
+      document.getElementById("editor-input"),
+      Object.assign({}, sharedOptions, {
+        value: defaultCode,
+        language: "ktr",
+        theme: currentTheme(),
+        automaticLayout: true,
+      }),
+    );
+
+    var outputEditor = monaco.editor.create(
+      document.getElementById("editor-output"),
+      Object.assign({}, sharedOptions, {
+        value: "",
+        language: "ktrir",
+        theme: currentTheme(),
+        automaticLayout: true,
+      }),
+    );
+
+    // ── Theme sync ───────────────────────────────────────────────────────────
+
+    var themeObserver = new MutationObserver(function () {
+      var theme = currentTheme();
+      monaco.editor.setTheme(theme);
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+
+    // ── Bidirectional compile / decompile wiring ──────────────────────────────
+
+    var statusEl = document.getElementById("status");
+    var errorBar = document.getElementById("error-bar");
+
+    // Guard: prevents programmatic setValue from triggering the other direction.
+    var updating = false;
+
+    // Parse error strings like "4:9:3: error: undefined reference"
+    // into Monaco marker objects.
+    function parseErrors(errorText) {
+      var markers = [];
+      var lines = errorText.split("\n");
+      for (var i = 0; i < lines.length; i++) {
+        var match = lines[i].match(/^(\d+):(\d+):(\d+): error: (.+)$/);
+        if (match) {
+          var line = parseInt(match[1], 10);
+          var col = parseInt(match[2], 10);
+          var len = parseInt(match[3], 10);
+          markers.push({
+            severity: monaco.MarkerSeverity.Error,
+            startLineNumber: line,
+            startColumn: col,
+            endLineNumber: line,
+            endColumn: col + Math.max(len, 1),
+            message: match[4],
+          });
+        }
+      }
+      return markers;
+    }
+
+    function formatMs(ms) {
+      if (ms < 0.1) return "< 0.1ms";
+      if (ms < 1) return ms.toFixed(2) + "ms";
+      if (ms < 10) return ms.toFixed(1) + "ms";
+      return Math.round(ms) + "ms";
+    }
+
+    function showError(msg) {
+      errorBar.textContent = msg;
+      errorBar.classList.remove("hidden");
+    }
+
+    function hideError() {
+      errorBar.classList.add("hidden");
+      errorBar.textContent = "";
+    }
+
+    function clearMarkers(editor) {
+      monaco.editor.setModelMarkers(editor.getModel(), "ktrc", []);
+    }
+
+    // .ktr → .ktrir
+    function runCompile() {
+      if (!wasm) return;
+
+      var source = inputEditor.getValue();
+      if (source.trim().length === 0) {
+        updating = true;
+        outputEditor.setValue("");
+        updating = false;
+        hideError();
+        clearMarkers(inputEditor);
+        statusEl.textContent = "";
+        return;
+      }
+
+      var t0 = performance.now();
+      var result = compileKtr(source);
+      var elapsed = formatMs(performance.now() - t0);
+
+      if (result.ok) {
+        updating = true;
+        outputEditor.setValue(result.output);
+        updating = false;
+        hideError();
+        clearMarkers(inputEditor);
+        statusEl.textContent = "Compiled in " + elapsed;
+      } else {
+        updating = true;
+        outputEditor.setValue("");
+        updating = false;
+        var markers = parseErrors(result.error);
+        monaco.editor.setModelMarkers(inputEditor.getModel(), "ktrc", markers);
+        var messages = markers.map(function (m) {
+          return m.startLineNumber + ":" + m.startColumn + ": " + m.message;
+        });
+        showError(messages.join("\n") || result.error);
+        statusEl.textContent = "Error in " + elapsed;
+      }
+    }
+
+    // .ktrir → .ktr
+    function runDecompile() {
+      if (!wasm) return;
+
+      var irSource = outputEditor.getValue();
+      if (irSource.trim().length === 0) {
+        updating = true;
+        inputEditor.setValue("");
+        updating = false;
+        hideError();
+        clearMarkers(outputEditor);
+        statusEl.textContent = "";
+        return;
+      }
+
+      var t0 = performance.now();
+      var result = decompileIr(irSource);
+      var elapsed = formatMs(performance.now() - t0);
+
+      if (result.ok) {
+        updating = true;
+        inputEditor.setValue(result.output);
+        updating = false;
+        hideError();
+        clearMarkers(outputEditor);
+        clearMarkers(inputEditor);
+        statusEl.textContent = "Decompiled in " + elapsed;
+      } else {
+        showError(result.error);
+        statusEl.textContent = "Error in " + ms + "ms";
+      }
+    }
+
+    // Debounced listeners — skip when the other side is updating programmatically.
+    var compileTimer = null;
+    var decompileTimer = null;
+
+    inputEditor.onDidChangeModelContent(function () {
+      if (updating) return;
+      if (decompileTimer) clearTimeout(decompileTimer);
+      if (compileTimer) clearTimeout(compileTimer);
+      compileTimer = setTimeout(runCompile, 200);
+    });
+
+    outputEditor.onDidChangeModelContent(function () {
+      if (updating) return;
+      if (compileTimer) clearTimeout(compileTimer);
+      if (decompileTimer) clearTimeout(decompileTimer);
+      decompileTimer = setTimeout(runDecompile, 200);
+    });
+
+    // ── Boot WASM ─────────────────────────────────────────────────────────────
+
+    statusEl.textContent = "Loading WASM\u2026";
+    loadWasm()
+      .then(function (exports) {
+        wasm = exports;
+        statusEl.textContent = "Ready";
+        runCompile();
+      })
+      .catch(function (err) {
+        statusEl.textContent = "Failed to load WASM";
+        console.error("WASM load error:", err);
+      });
+  });
+</script>

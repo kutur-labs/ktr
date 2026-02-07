@@ -139,4 +139,16 @@ const { toc } = Astro.props;
   .prose li::marker {
     @apply text-foreground/40;
   }
+  .prose table {
+    @apply my-4 w-full text-sm border-collapse;
+  }
+  .prose th {
+    @apply text-left font-normal text-foreground/60 border-b border-border pb-2 pr-4;
+  }
+  .prose td {
+    @apply text-foreground/80 border-b border-border/50 py-1.5 pr-4;
+  }
+  .prose thead tr {
+    @apply border-b border-border;
+  }
 </style>

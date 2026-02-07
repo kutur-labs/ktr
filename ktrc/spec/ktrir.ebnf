@@ -1,0 +1,173 @@
+(* ================================================================== *)
+(* ktr-ir v1 -- Extended Backus-Naur Form                             *)
+(*                                                                    *)
+(* Line-oriented, topo-sorted intermediate representation.            *)
+(* File extension: .ktrir                                              *)
+(* ================================================================== *)
+
+
+(* ------------------------------------------------------------------ *)
+(* Program structure                                                   *)
+(* ------------------------------------------------------------------ *)
+
+program          = header , { NEWLINE } , { top_level } ;
+
+header           = "#" , "ktr-ir" , "v" , INTEGER , NEWLINE ;
+
+top_level        = input
+                 | assert
+                 | fn_def
+                 | search
+                 | instruction
+                 | export
+                 | comment
+                 | NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Section order (global topo-sort)                                    *)
+(*                                                                    *)
+(*   1. Header         -- version, optional metadata                  *)
+(*   2. Inputs         -- parametric measurements + assertions        *)
+(*   3. Functions      -- callable blocks                             *)
+(*   4. Searches       -- solver blocks                               *)
+(*   5. Top-level      -- instructions using resolved values          *)
+(*   6. Exports        -- what the runtime should render/output       *)
+(*                                                                    *)
+(* Each section only references names defined in earlier sections or  *)
+(* in its own scope.                                                  *)
+(* ------------------------------------------------------------------ *)
+
+
+(* ------------------------------------------------------------------ *)
+(* Inputs                                                              *)
+(* ------------------------------------------------------------------ *)
+
+input            = "input" , ref , ":" , type , "=" , literal , NEWLINE ;
+
+assert           = "assert" , ref , cmp_op , operand , NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Functions                                                           *)
+(* ------------------------------------------------------------------ *)
+
+fn_def           = "fn" , IDENT , "(" , [ param_list ] , ")" ,
+                   "->" , type , NEWLINE ,
+                   fn_body ,
+                   "end" , NEWLINE ;
+
+param_list       = param , { "," , param } ;
+
+param            = ref , ":" , type ;
+
+fn_body          = { instruction } , ret ;
+
+ret              = "ret" , ref , NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Search / Solver                                                     *)
+(* ------------------------------------------------------------------ *)
+
+search           = "search" , ref , ":" , type ,
+                   "[" , NUMBER , ".." , NUMBER , "]" ,
+                   "tol" , literal , NEWLINE ,
+                   search_body ,
+                   "end" , NEWLINE ;
+
+search_body      = { instruction } , require ;
+
+require          = "require" , ref , cmp_op , operand , NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Instructions                                                        *)
+(* ------------------------------------------------------------------ *)
+
+instruction      = ref , ":" , type , "=" , rhs , NEWLINE ;
+
+rhs              = operation                         (* general op form   *)
+                 | ref                               (* copy / alias      *)
+                 | literal ;                         (* constant          *)
+
+operation        = call_op | builtin_op ;
+
+call_op          = "call" , IDENT , { operand } ;
+
+builtin_op       = builtin , operand , { operand } ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Exports                                                             *)
+(* ------------------------------------------------------------------ *)
+
+export           = "export" , ref , STRING , NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Shared productions                                                  *)
+(* ------------------------------------------------------------------ *)
+
+operand          = ref | literal ;
+
+ref              = "%" , ( IDENT | INTEGER ) ;
+
+literal          = NUMBER , [ UNIT ] ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Enumerations                                                        *)
+(* ------------------------------------------------------------------ *)
+
+type             = "f64"
+                 | "length"
+                 | "percentage"
+                 | "point"
+                 | "bezier"
+                 | "bool" ;
+
+cmp_op           = "eq" | "ne" | "gt" | "lt" | "gte" | "lte" ;
+
+builtin          = "add" | "sub" | "mul" | "div"
+                 | "point" | "bezier"
+                 | "shift_up" | "shift_down" | "shift_left" | "shift_right"
+                 | "dx" | "dy"
+                 | "curve_length" ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Comments                                                            *)
+(* ------------------------------------------------------------------ *)
+
+comment          = "#" , { ANY - NEWLINE } , NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Lexical terminals                                                   *)
+(* ------------------------------------------------------------------ *)
+
+IDENT            = LETTER , { LETTER | DIGIT | "_" } ;
+
+INTEGER          = DIGIT , { DIGIT } ;
+
+NUMBER           = [ "-" ] , DIGIT , { DIGIT } ,
+                   [ "." , DIGIT , { DIGIT } ] ;
+
+STRING           = '"' , { ANY - '"' } , '"' ;
+
+UNIT             = "mm" | "cm" ;
+
+LETTER           = "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H"
+                 | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P"
+                 | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X"
+                 | "Y" | "Z"
+                 | "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h"
+                 | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p"
+                 | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x"
+                 | "y" | "z" ;
+
+DIGIT            = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7"
+                 | "8" | "9" ;
+
+NEWLINE          = ? U+000A ? ;

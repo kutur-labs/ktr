@@ -1,6 +1,12 @@
 ---
 import Head from "./head.astro";
 import ThemeSwitcher from "../components/theme-switcher.astro";
+
+interface Props {
+  headerBorder?: boolean;
+}
+
+const { headerBorder = false } = Astro.props;
 ---
 
 <html lang="en">
@@ -9,7 +15,10 @@ import ThemeSwitcher from "../components/theme-switcher.astro";
   </head>
   <body>
     <header
-      class="sticky top-0 z-10 h-14 md:h-16 border-b border-transparent bg-background"
+      class:list={[
+        "sticky top-0 z-10 h-14 md:h-16 border-b bg-background",
+        headerBorder ? "border-border" : "border-transparent",
+      ]}
     >
       <nav class="h-full flex items-end justify-between py-2 md:py-3 px-4">
         <a
@@ -30,6 +39,14 @@ import ThemeSwitcher from "../components/theme-switcher.astro";
               target="_blank"
               class="text-xs md:text-sm text-primary-muted-foreground hover:text-primary-muted-foreground/70 active:text-primary-muted-foreground/70 focus:text-primary-muted-foreground/70"
               >GitHub ↗</a
+            >
+          </li>
+
+          <li>
+            <a
+              href="/playground"
+              class="text-xs md:text-sm text-primary-muted-foreground hover:text-primary-muted-foreground/70 active:text-primary-muted-foreground/70 focus:text-primary-muted-foreground/70"
+              >Playground</a
             >
           </li>
 
