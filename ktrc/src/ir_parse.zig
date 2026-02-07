@@ -5,6 +5,8 @@ const Inst = ir.Inst;
 const Value = ir.Value;
 const LengthUnit = ir.LengthUnit;
 const Type = ir.Type;
+const Op = ir.Op;
+const Operand = ir.Operand;
 
 pub const Error = error{
     InvalidFormat,
@@ -27,6 +29,48 @@ fn skipWs(s: []const u8) []const u8 {
 fn splitOnce(s: []const u8, delim: u8) ?struct { []const u8, []const u8 } {
     if (std.mem.indexOfScalar(u8, s, delim)) |idx| {
         return .{ s[0..idx], s[idx + 1 ..] };
+    }
+    return null;
+}
+
+/// Parse a single operand token (either `%ref` or a literal value).
+fn parseOperand(ally: std.mem.Allocator, token: []const u8) Error!Operand {
+    if (token.len > 0 and token[0] == '%') {
+        return .{ .ref = try parseName(ally, token) };
+    }
+    return .{ .literal = Value.parse(token) catch return error.InvalidFormat };
+}
+
+/// Try to parse a builtin RHS: `op operand operand` (e.g., `mul %a 2`).
+/// Returns null if the first token is not a known op keyword.
+fn parseBuiltinRhs(ally: std.mem.Allocator, text: []const u8) Error!?Inst.Rhs {
+    // Find the first space to extract the op keyword.
+    const first_space = std.mem.indexOfScalar(u8, text, ' ') orelse return null;
+    const op_str = text[0..first_space];
+    const op = Op.fromStr(op_str) orelse return null;
+
+    // Parse the two operands after the op keyword.
+    const rest = skipWs(text[first_space + 1 ..]);
+
+    // Find the boundary between the two operands. Operands are separated by
+    // whitespace. The first operand is either a `%name` or a literal.
+    const operand_split = findOperandBoundary(rest) orelse return error.InvalidFormat;
+    const lhs_text = std.mem.trimRight(u8, rest[0..operand_split], " \t");
+    const rhs_text = skipWs(rest[operand_split..]);
+
+    if (lhs_text.len == 0 or rhs_text.len == 0) return error.InvalidFormat;
+
+    const lhs = try parseOperand(ally, lhs_text);
+    const rhs = try parseOperand(ally, rhs_text);
+
+    return .{ .builtin = .{ .op = op, .lhs = lhs, .rhs = rhs } };
+}
+
+/// Find the boundary index between two operands in a string like `%a 2` or `100mm %b`.
+/// Returns the index of the first whitespace character separating them.
+fn findOperandBoundary(text: []const u8) ?usize {
+    for (text, 0..) |c, i| {
+        if (std.ascii.isWhitespace(c)) return i;
     }
     return null;
 }
@@ -81,10 +125,16 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
         const name = try parseName(ally, ref_text);
         const ty = Type.fromStr(type_text) orelse return error.InvalidFormat;
 
-        // Parse RHS: either a `%name` (copy) or a literal value (constant).
-        const rhs: Inst.Rhs = if (rhs_text.len > 0 and rhs_text[0] == '%') blk: {
-            break :blk .{ .copy = try parseName(ally, rhs_text) };
-        } else blk: {
+        // Parse RHS: `%name` (copy), `op operand operand` (builtin), or literal (constant).
+        const rhs: Inst.Rhs = blk: {
+            if (rhs_text.len > 0 and rhs_text[0] == '%') {
+                break :blk .{ .copy = try parseName(ally, rhs_text) };
+            }
+            // Try to parse as builtin op: first token is the op keyword.
+            if (try parseBuiltinRhs(ally, rhs_text)) |builtin_rhs| {
+                break :blk builtin_rhs;
+            }
+            // Fall back to literal constant.
             break :blk .{ .constant = Value.parse(rhs_text) catch return error.InvalidFormat };
         };
 
@@ -135,7 +185,7 @@ test "parse: single dimension literal" {
             try std.testing.expectEqual(@as(f64, 100.0), v.number);
             try std.testing.expectEqual(LengthUnit.mm, v.unit.?);
         },
-        .copy => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -159,7 +209,7 @@ test "parse: copy reference" {
 
     switch (inst_y.rhs) {
         .copy => |name| try std.testing.expectEqualStrings("x", name),
-        .constant => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -191,7 +241,7 @@ test "parse: mixed types" {
     try std.testing.expectEqualStrings("y", result.instructions[3].name);
     switch (result.instructions[3].rhs) {
         .copy => |name| try std.testing.expectEqualStrings("x", name),
-        .constant => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -216,6 +266,117 @@ test "parse: cm unit" {
             try std.testing.expectEqual(@as(f64, 25.0), v.number);
             try std.testing.expectEqual(LengthUnit.cm, v.unit.?);
         },
-        .copy => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: builtin op with ref and literal" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\%a : length = 100mm
+        \\%x : length = mul %a 2
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.instructions.len);
+
+    const inst = result.instructions[1];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.length, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.mul, b.op);
+            try std.testing.expect(b.lhs == .ref);
+            try std.testing.expectEqualStrings("a", b.lhs.ref);
+            try std.testing.expect(b.rhs == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.rhs.literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: builtin op with two refs" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\%a : f64 = 10
+        \\%b : f64 = 20
+        \\%x : f64 = add %a %b
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(3, result.instructions.len);
+
+    const inst = result.instructions[2];
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.add, b.op);
+            try std.testing.expect(b.lhs == .ref);
+            try std.testing.expectEqualStrings("a", b.lhs.ref);
+            try std.testing.expect(b.rhs == .ref);
+            try std.testing.expectEqualStrings("b", b.rhs.ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: builtin op with two literals" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\%x : f64 = add 2 3
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    const inst = result.instructions[0];
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.add, b.op);
+            try std.testing.expect(b.lhs == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.lhs.literal.number);
+            try std.testing.expect(b.rhs == .literal);
+            try std.testing.expectEqual(@as(f64, 3.0), b.rhs.literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: builtin op with dimension literals" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\%x : length = add 100mm 200mm
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    const inst = result.instructions[0];
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.add, b.op);
+            try std.testing.expect(b.lhs == .literal);
+            try std.testing.expectEqual(@as(f64, 100.0), b.lhs.literal.number);
+            try std.testing.expectEqual(LengthUnit.mm, b.lhs.literal.unit.?);
+            try std.testing.expect(b.rhs == .literal);
+            try std.testing.expectEqual(@as(f64, 200.0), b.rhs.literal.number);
+        },
+        else => return error.TestUnexpectedResult,
     }
 }

@@ -4,13 +4,8 @@ pub const LengthUnit = enum(u8) {
     mm,
     cm,
 
-    pub const map = std.StaticStringMap(LengthUnit).initComptime(.{
-        .{ "mm", .mm },
-        .{ "cm", .cm },
-    });
-
     pub fn fromStr(s: []const u8) ?LengthUnit {
-        return map.get(s);
+        return std.meta.stringToEnum(LengthUnit, s);
     }
 
     pub fn toStr(self: LengthUnit) []const u8 {

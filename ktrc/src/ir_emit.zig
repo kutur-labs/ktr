@@ -4,12 +4,21 @@ const Ir = ir.Ir;
 const Inst = ir.Inst;
 const Value = ir.Value;
 const Type = ir.Type;
+const Operand = ir.Operand;
 
 /// Write a numeric value with optional unit suffix.
 fn writeValue(writer: anytype, value: Value) !void {
     try value.writeNumber(writer);
     if (value.unit) |u| {
         try writer.writeAll(u.toStr());
+    }
+}
+
+/// Write an operand (ref or literal).
+fn writeOperand(writer: anytype, operand: Operand) !void {
+    switch (operand) {
+        .ref => |name| try writer.print("%{s}", .{name}),
+        .literal => |v| try writeValue(writer, v),
     }
 }
 
@@ -27,6 +36,12 @@ pub fn emit(ir_data: Ir, writer: anytype) !void {
         switch (inst.rhs) {
             .constant => |v| try writeValue(writer, v),
             .copy => |name| try writer.print("%{s}", .{name}),
+            .builtin => |b| {
+                try writer.print("{s} ", .{b.op.toStr()});
+                try writeOperand(writer, b.lhs);
+                try writer.writeByte(' ');
+                try writeOperand(writer, b.rhs);
+            },
         }
         try writer.writeByte('\n');
     }
@@ -197,5 +212,80 @@ test "roundtrip: lower then emit then parse" {
     defer parsed.deinit();
 
     // Lowered and parsed Ir should be structurally equal.
+    try std.testing.expect(lowered.eql(parsed));
+}
+
+test "emit: builtin op" {
+    const allocator = std.testing.allocator;
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const insts = try ally.alloc(Inst, 1);
+    insts[0] = .{
+        .name = try ally.dupe(u8, "x"),
+        .ty = .f64,
+        .rhs = .{ .builtin = .{
+            .op = .mul,
+            .lhs = Operand{ .ref = try ally.dupe(u8, "a") },
+            .rhs = Operand{ .literal = .{ .number = 2.0, .unit = null } },
+        } },
+    };
+
+    var ir_data = Ir{ .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try emitToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\# ktr-ir v1
+        \\
+        \\%x : f64 = mul %a 2
+        \\
+    , output);
+}
+
+test "roundtrip: arithmetic emit then parse" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let a = 100mm let x = a * 2";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try sema.analyze(allocator, &tree);
+    defer sem.deinit();
+
+    var lowered = try lower.lower(allocator, &tree, &sem);
+    defer lowered.deinit();
+
+    const text = try emitToString(allocator, lowered);
+    defer allocator.free(text);
+
+    var parsed = try ir_parse.parse(allocator, text);
+    defer parsed.deinit();
+
+    try std.testing.expect(lowered.eql(parsed));
+}
+
+test "roundtrip: complex expression emit then parse" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let x = (2 + 2) / 2";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try sema.analyze(allocator, &tree);
+    defer sem.deinit();
+
+    var lowered = try lower.lower(allocator, &tree, &sem);
+    defer lowered.deinit();
+
+    const text = try emitToString(allocator, lowered);
+    defer allocator.free(text);
+
+    var parsed = try ir_parse.parse(allocator, text);
+    defer parsed.deinit();
+
     try std.testing.expect(lowered.eql(parsed));
 }

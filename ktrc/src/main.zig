@@ -28,20 +28,6 @@ fn usageError(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(2);
 }
 
-fn computeLineCol(source: []const u8, byte_offset: usize) struct { usize, usize } {
-    var line: usize = 1;
-    var col: usize = 1;
-    for (source[0..@min(byte_offset, source.len)]) |c| {
-        if (c == '\n') {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    return .{ line, col };
-}
-
 fn reportDiagnostics(
     source: []const u8,
     tokens: ast.TokenList,
@@ -51,7 +37,7 @@ fn reportDiagnostics(
     const stderr = std.fs.File.stderr();
     for (diagnostics) |diag| {
         const start = tokens.items(.start)[diag.token];
-        const loc = computeLineCol(source, start);
+        const loc = ast.computeLineCol(source, start);
         const msg = std.fmt.allocPrint(std.heap.page_allocator, "{s}:{d}:{d}: error: {s}\n", .{
             file_name, loc[0], loc[1], diag.tag.message(),
         }) catch continue;
@@ -191,7 +177,7 @@ fn cmdDecompile(gpa: Allocator, args: []const [:0]const u8) void {
     // Decompile to .ktr source.
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(gpa);
-    ir_decompile.decompile(ir_data, buf.writer(gpa)) catch fatal("failed to decompile", .{});
+    ir_decompile.decompile(gpa, ir_data, buf.writer(gpa)) catch fatal("failed to decompile", .{});
     const output = buf.toOwnedSlice(gpa) catch fatal("out of memory", .{});
     defer gpa.free(output);
 

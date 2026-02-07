@@ -418,6 +418,8 @@ The compiler currently implements the following subset:
 - [x] `let` bindings with literal values (`100mm`, `50%`, `42`)
 - [x] `let` bindings with identifier references (`let y = x`)
 - [x] Type inference for `length`, `percentage`, `f64`
+- [x] Arithmetic expressions (`+`, `-`, `*`, `/`) with precedence
+- [x] Parenthesized grouping
 - [x] Duplicate binding detection
 - [x] Undefined reference detection
 - [x] Poison type for error suppression
@@ -427,11 +429,9 @@ The compiler currently implements the following subset:
 Planned (not yet implemented):
 
 - [ ] `input` declarations with assertion blocks
-- [ ] Arithmetic expressions (`+`, `-`, `*`, `/`)
 - [ ] `fn` definitions with typed parameters
 - [ ] Function calls and constructor calls (`point()`, `bezier()`)
 - [ ] Method calls (`.up()`, `.dx()`, etc.)
 - [ ] `search` solver blocks
 - [ ] `export` statements
-- [ ] Parenthesized grouping
 - [ ] `point`, `bezier`, `bool` types

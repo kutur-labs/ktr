@@ -16,6 +16,7 @@ pub const Diagnostic = struct {
         expected_identifier,
         expected_equal,
         expected_expression,
+        expected_r_paren,
         unexpected_token,
 
         // ------------------------------
@@ -24,15 +25,18 @@ pub const Diagnostic = struct {
 
         duplicate_binding,
         undefined_reference,
+        type_mismatch,
 
         pub fn message(self: Tag) []const u8 {
             return switch (self) {
                 .expected_identifier => "expected identifier",
                 .expected_equal => "expected '='",
                 .expected_expression => "expected expression",
+                .expected_r_paren => "expected ')'",
                 .unexpected_token => "unexpected token",
                 .duplicate_binding => "duplicate binding",
                 .undefined_reference => "undefined reference",
+                .type_mismatch => "type mismatch in arithmetic expression",
             };
         }
     };
@@ -73,6 +77,26 @@ pub const Node = struct {
         /// A reference to a previously defined binding, e.g. `x`.
         /// main_token: identifier token. data: unused.
         identifier_ref,
+
+        // ------------------------------
+        // Binary Arithmetic
+        // ------------------------------
+
+        /// `lhs + rhs`. main_token: `+` token. lhs: left node. rhs: right node.
+        add,
+        /// `lhs - rhs`. main_token: `-` token. lhs: left node. rhs: right node.
+        sub,
+        /// `lhs * rhs`. main_token: `*` token. lhs: left node. rhs: right node.
+        mul,
+        /// `lhs / rhs`. main_token: `/` token. lhs: left node. rhs: right node.
+        div,
+
+        // ------------------------------
+        // Grouping
+        // ------------------------------
+
+        /// `( expr )`. main_token: `(` token. lhs: inner expression node. rhs: unused (0).
+        grouped_expression,
 
         // ------------------------------
         // Literals
@@ -131,6 +155,21 @@ pub const Ast = struct {
         self.* = undefined;
     }
 };
+
+/// Compute 1-based line and column numbers for a byte offset in source text.
+pub fn computeLineCol(source: []const u8, byte_offset: usize) struct { usize, usize } {
+    var line: usize = 1;
+    var col: usize = 1;
+    for (source[0..@min(byte_offset, source.len)]) |c| {
+        if (c == '\n') {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    return .{ line, col };
+}
 
 // --- Tests ---
 

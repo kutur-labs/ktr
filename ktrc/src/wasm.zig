@@ -26,20 +26,6 @@ fn freeError() void {
 
 // ─── Diagnostics ────────────────────────────────────────────────────────────
 
-fn computeLineCol(source: []const u8, byte_offset: usize) struct { usize, usize } {
-    var line: usize = 1;
-    var col: usize = 1;
-    for (source[0..@min(byte_offset, source.len)]) |c| {
-        if (c == '\n') {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    return .{ line, col };
-}
-
 fn formatDiagnostics(
     source: []const u8,
     tokens: ast.TokenList,
@@ -52,7 +38,7 @@ fn formatDiagnostics(
         if (i > 0) writer.writeByte('\n') catch return;
         const start = tokens.items(.start)[diag.token];
         const end = tokens.items(.end)[diag.token];
-        const loc = computeLineCol(source, start);
+        const loc = ast.computeLineCol(source, start);
         const token_len = end - start;
         writer.print("{d}:{d}:{d}: error: {s}", .{
             loc[0], loc[1], token_len, diag.tag.message(),
@@ -147,7 +133,7 @@ export fn decompile_ir(input_ptr: usize, input_len: usize) i32 {
 
     // Decompile to .ktr source.
     var buf = std.ArrayList(u8).empty;
-    ir_decompile.decompile(ir_data, buf.writer(allocator)) catch return -1;
+    ir_decompile.decompile(allocator, ir_data, buf.writer(allocator)) catch return -1;
     output_buf = buf.toOwnedSlice(allocator) catch return -1;
 
     return @intCast(output_buf.?.len);

@@ -46,7 +46,71 @@ const Parser = struct {
     }
 
     fn parseExpression(self: *Parser) Error!ast.NodeIndex {
+        return self.parseAdditiveExpr();
+    }
+
+    fn parseAdditiveExpr(self: *Parser) Error!ast.NodeIndex {
+        var lhs = try self.parseMultiplicativeExpr();
+
+        while (true) {
+            const tag = self.currentTag();
+            const node_tag: ast.Node.Tag = switch (tag) {
+                .plus => .add,
+                .minus => .sub,
+                else => break,
+            };
+            const op_token = self.cursor;
+            self.advance();
+            const rhs = try self.parseMultiplicativeExpr();
+            lhs = try self.addNode(.{
+                .tag = node_tag,
+                .main_token = op_token,
+                .data = .{ .lhs = lhs, .rhs = rhs },
+            });
+        }
+
+        return lhs;
+    }
+
+    fn parseMultiplicativeExpr(self: *Parser) Error!ast.NodeIndex {
+        var lhs = try self.parsePrimaryExpr();
+
+        while (true) {
+            const tag = self.currentTag();
+            const node_tag: ast.Node.Tag = switch (tag) {
+                .star => .mul,
+                .slash => .div,
+                else => break,
+            };
+            const op_token = self.cursor;
+            self.advance();
+            const rhs = try self.parsePrimaryExpr();
+            lhs = try self.addNode(.{
+                .tag = node_tag,
+                .main_token = op_token,
+                .data = .{ .lhs = lhs, .rhs = rhs },
+            });
+        }
+
+        return lhs;
+    }
+
+    fn parsePrimaryExpr(self: *Parser) Error!ast.NodeIndex {
         const tag = self.currentTag();
+
+        // Parenthesized grouping: '(' expression ')'
+        if (tag == .l_paren) {
+            const paren_token = self.cursor;
+            self.advance();
+            const inner = try self.parseExpression();
+            _ = try self.expect(.r_paren, .expected_r_paren);
+            return self.addNode(.{
+                .tag = .grouped_expression,
+                .main_token = paren_token,
+                .data = .{ .lhs = inner, .rhs = 0 },
+            });
+        }
+
         const node_tag: ast.Node.Tag = switch (tag) {
             .identifier => .identifier_ref,
             .number_literal => .number_literal,
@@ -250,4 +314,119 @@ test "parse: let y = x (identifier ref)" {
     const value_node = tree.nodes.get(let_node.data.lhs);
     try std.testing.expectEqual(.identifier_ref, value_node.tag);
     try std.testing.expectEqualStrings("x", tree.tokenSlice(value_node.main_token));
+}
+
+test "parse: let x = a * 2" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let x = a * 2";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(1, statements.len);
+
+    const let_node = tree.nodes.get(statements[0]);
+    const value_node = tree.nodes.get(let_node.data.lhs);
+    try std.testing.expectEqual(.mul, value_node.tag);
+
+    // LHS of mul should be identifier_ref 'a'
+    const lhs = tree.nodes.get(value_node.data.lhs);
+    try std.testing.expectEqual(.identifier_ref, lhs.tag);
+    try std.testing.expectEqualStrings("a", tree.tokenSlice(lhs.main_token));
+
+    // RHS of mul should be number_literal '2'
+    const rhs = tree.nodes.get(value_node.data.rhs);
+    try std.testing.expectEqual(.number_literal, rhs.tag);
+    try std.testing.expectEqualStrings("2", tree.tokenSlice(rhs.main_token));
+}
+
+test "parse: let x = (2 + 2) / 2" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let x = (2 + 2) / 2";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    const let_node = tree.nodes.get(statements[0]);
+    const value_node = tree.nodes.get(let_node.data.lhs);
+
+    // Top-level should be div
+    try std.testing.expectEqual(.div, value_node.tag);
+
+    // LHS of div should be a grouped_expression containing an add
+    const lhs = tree.nodes.get(value_node.data.lhs);
+    try std.testing.expectEqual(.grouped_expression, lhs.tag);
+
+    const inner = tree.nodes.get(lhs.data.lhs);
+    try std.testing.expectEqual(.add, inner.tag);
+
+    // RHS of div should be number_literal '2'
+    const rhs = tree.nodes.get(value_node.data.rhs);
+    try std.testing.expectEqual(.number_literal, rhs.tag);
+}
+
+test "parse: precedence 1 + 2 * 3 builds mul under add" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let x = 1 + 2 * 3";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    const let_node = tree.nodes.get(statements[0]);
+    const value_node = tree.nodes.get(let_node.data.lhs);
+
+    // Top-level is add (lower precedence)
+    try std.testing.expectEqual(.add, value_node.tag);
+
+    // LHS is number_literal '1'
+    const lhs = tree.nodes.get(value_node.data.lhs);
+    try std.testing.expectEqual(.number_literal, lhs.tag);
+    try std.testing.expectEqualStrings("1", tree.tokenSlice(lhs.main_token));
+
+    // RHS is mul '2 * 3'
+    const rhs = tree.nodes.get(value_node.data.rhs);
+    try std.testing.expectEqual(.mul, rhs.tag);
+}
+
+test "parse: left-associative a - b - c" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let x = a - b - c";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    const let_node = tree.nodes.get(statements[0]);
+    const value_node = tree.nodes.get(let_node.data.lhs);
+
+    // Top-level is sub (the second -)
+    try std.testing.expectEqual(.sub, value_node.tag);
+
+    // RHS should be identifier_ref 'c'
+    const rhs = tree.nodes.get(value_node.data.rhs);
+    try std.testing.expectEqual(.identifier_ref, rhs.tag);
+    try std.testing.expectEqualStrings("c", tree.tokenSlice(rhs.main_token));
+
+    // LHS should be sub 'a - b' (the first -)
+    const lhs = tree.nodes.get(value_node.data.lhs);
+    try std.testing.expectEqual(.sub, lhs.tag);
+}
+
+test "parse: missing closing paren emits diagnostic" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let x = (2 + 2";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(tree.hasErrors());
+    try std.testing.expect(tree.diagnostics.len >= 1);
+    try std.testing.expectEqual(.expected_r_paren, tree.diagnostics[0].tag);
 }

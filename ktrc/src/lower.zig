@@ -9,6 +9,8 @@ const Inst = ir.Inst;
 const Value = ir.Value;
 const LengthUnit = ir.LengthUnit;
 const Type = ir.Type;
+const Op = ir.Op;
+const Operand = ir.Operand;
 
 /// Map a sema type to an IR type. Poison must never reach this point.
 fn mapType(sema_ty: sema.Type) Type {
@@ -19,6 +21,119 @@ fn mapType(sema_ty: sema.Type) Type {
         .poison => unreachable,
     };
 }
+
+const Lowerer = struct {
+    tree: *const Ast,
+    sema_result: *const Sema,
+    ally: std.mem.Allocator,
+    instructions: std.ArrayList(Inst),
+    temp_counter: u32,
+
+    const LowerError = std.mem.Allocator.Error || error{InvalidLiteral};
+
+    /// Generate a temp name like "0", "1", etc.
+    fn tempName(self: *Lowerer) LowerError![]const u8 {
+        const name = try std.fmt.allocPrint(self.ally, "{d}", .{self.temp_counter});
+        self.temp_counter += 1;
+        return name;
+    }
+
+    /// Map an AST node tag to an IR op.
+    fn mapOp(tag: ast.Node.Tag) Op {
+        return switch (tag) {
+            .add => .add,
+            .sub => .sub,
+            .mul => .mul,
+            .div => .div,
+            else => unreachable,
+        };
+    }
+
+    /// Look up the IR type for an expression node via the sema result.
+    fn nodeType(self: *Lowerer, node_index: ast.NodeIndex) Type {
+        const sema_ty = self.sema_result.node_types.get(node_index).?;
+        return mapType(sema_ty);
+    }
+
+    /// Lower an expression node. For leaf nodes, returns an Operand directly
+    /// (no instruction emitted). For binary ops, emits intermediate instructions
+    /// with temp names and returns a ref operand to the result.
+    fn lowerExpr(self: *Lowerer, node_index: ast.NodeIndex) LowerError!Operand {
+        const node = self.tree.nodes.get(node_index);
+        return switch (node.tag) {
+            .dimension_literal, .number_literal => {
+                const text = self.tree.tokenSlice(node.main_token);
+                return .{ .literal = Value.parse(text) catch return error.InvalidLiteral };
+            },
+            .percentage_literal => {
+                const text = self.tree.tokenSlice(node.main_token);
+                return .{ .literal = Value.parse(text[0 .. text.len - 1]) catch return error.InvalidLiteral };
+            },
+            .identifier_ref => {
+                return .{ .ref = try self.ally.dupe(u8, self.tree.tokenSlice(node.main_token)) };
+            },
+            .grouped_expression => {
+                return self.lowerExpr(node.data.lhs);
+            },
+            .add, .sub, .mul, .div => {
+                const lhs_operand = try self.lowerExpr(node.data.lhs);
+                const rhs_operand = try self.lowerExpr(node.data.rhs);
+
+                const ty = self.nodeType(node_index);
+                const name = try self.tempName();
+
+                try self.instructions.append(self.ally, .{
+                    .name = name,
+                    .ty = ty,
+                    .rhs = .{ .builtin = .{
+                        .op = mapOp(node.tag),
+                        .lhs = lhs_operand,
+                        .rhs = rhs_operand,
+                    } },
+                });
+
+                return .{ .ref = name };
+            },
+            .root, .let_statement => unreachable,
+        };
+    }
+
+    /// Lower a let binding. Delegates to `lowerExpr` for all node types,
+    /// then converts the resulting operand into a named instruction.
+    fn lowerLet(self: *Lowerer, name: []const u8, sym: sema.Symbol) LowerError!void {
+        const node = self.tree.nodes.get(sym.node);
+        const ty = mapType(sym.ty);
+        const duped_name = try self.ally.dupe(u8, name);
+
+        const inst_count_before = self.instructions.items.len;
+        const operand = try self.lowerExpr(node.data.lhs);
+        const emitted_new = self.instructions.items.len > inst_count_before;
+
+        switch (operand) {
+            .ref => |ref_name| {
+                // Only rename when lowerExpr actually emitted a temp instruction
+                // for this expression. Otherwise emit a copy (e.g. identifier refs).
+                if (emitted_new) {
+                    const len = self.instructions.items.len;
+                    self.instructions.items[len - 1].name = duped_name;
+                } else {
+                    try self.instructions.append(self.ally, .{
+                        .name = duped_name,
+                        .ty = ty,
+                        .rhs = .{ .copy = ref_name },
+                    });
+                }
+            },
+            .literal => |v| {
+                try self.instructions.append(self.ally, .{
+                    .name = duped_name,
+                    .ty = ty,
+                    .rhs = .{ .constant = v },
+                });
+            },
+        }
+    }
+};
 
 /// Lower a semantically-analyzed AST into the intermediate representation.
 ///
@@ -32,45 +147,24 @@ pub fn lower(gpa: std.mem.Allocator, tree: *const Ast, sema_result: *const Sema)
     errdefer arena.deinit();
     const ally = arena.allocator();
 
-    const count = sema_result.symbols.count();
-    const instructions = try ally.alloc(Inst, count);
+    var l = Lowerer{
+        .tree = tree,
+        .sema_result = sema_result,
+        .ally = ally,
+        .instructions = std.ArrayList(Inst).empty,
+        .temp_counter = 0,
+    };
 
     const keys = sema_result.symbols.keys();
     const values = sema_result.symbols.values();
 
-    for (keys, values, 0..) |name, sym, i| {
-        const node = tree.nodes.get(sym.node);
-        // node is a let_statement; the value expression is at data.lhs.
-        const value_node = tree.nodes.get(node.data.lhs);
-
-        const duped_name = try ally.dupe(u8, name);
-        const ty = mapType(sym.ty);
-
-        const text = tree.tokenSlice(value_node.main_token);
-        const rhs: Inst.Rhs = switch (value_node.tag) {
-            .dimension_literal, .number_literal => .{
-                .constant = Value.parse(text) catch return error.InvalidLiteral,
-            },
-            .percentage_literal => .{
-                .constant = Value.parse(text[0 .. text.len - 1]) catch return error.InvalidLiteral,
-            },
-            .identifier_ref => .{
-                .copy = try ally.dupe(u8, tree.tokenSlice(value_node.main_token)),
-            },
-            // Only expression nodes appear as let values.
-            .root, .let_statement => unreachable,
-        };
-
-        instructions[i] = .{
-            .name = duped_name,
-            .ty = ty,
-            .rhs = rhs,
-        };
+    for (keys, values) |name, sym| {
+        try l.lowerLet(name, sym);
     }
 
     return .{
         .version = 1,
-        .instructions = instructions,
+        .instructions = try l.instructions.toOwnedSlice(ally),
         .arena = arena,
     };
 }
@@ -106,7 +200,7 @@ test "lower: let x = 100mm" {
             try std.testing.expectEqual(@as(f64, 100.0), v.number);
             try std.testing.expectEqual(LengthUnit.mm, v.unit.?);
         },
-        .copy => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -126,7 +220,7 @@ test "lower: let p = 50%" {
             try std.testing.expectEqual(@as(f64, 50.0), v.number);
             try std.testing.expectEqual(@as(?LengthUnit, null), v.unit);
         },
-        .copy => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -146,7 +240,7 @@ test "lower: let n = 42" {
             try std.testing.expectEqual(@as(f64, 42.0), v.number);
             try std.testing.expectEqual(@as(?LengthUnit, null), v.unit);
         },
-        .copy => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -169,7 +263,7 @@ test "lower: let y = x (copy)" {
 
     switch (inst_y.rhs) {
         .copy => |name| try std.testing.expectEqualStrings("x", name),
-        .constant => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
@@ -201,7 +295,108 @@ test "lower: dimension with cm unit" {
             try std.testing.expectEqual(@as(f64, 25.0), v.number);
             try std.testing.expectEqual(LengthUnit.cm, v.unit.?);
         },
-        .copy => return error.TestUnexpectedResult,
+        else => return error.TestUnexpectedResult,
     }
 }
 
+test "lower: let x = a * 2" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "let a = 100mm let x = a * 2");
+    defer result.deinit();
+
+    // Should produce: %a : length = 100mm, %x : length = mul %a 2
+    try std.testing.expectEqual(2, result.instructions.len);
+
+    const inst = result.instructions[1];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.length, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.mul, b.op);
+            try std.testing.expect(b.lhs == .ref);
+            try std.testing.expectEqualStrings("a", b.lhs.ref);
+            try std.testing.expect(b.rhs == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.rhs.literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: let x = (2 + 2) / 2 flattens to temps" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "let x = (2 + 2) / 2");
+    defer result.deinit();
+
+    // Should produce: %0 : f64 = add 2 2, %x : f64 = div %0 2
+    try std.testing.expectEqual(2, result.instructions.len);
+
+    const temp = result.instructions[0];
+    try std.testing.expectEqualStrings("0", temp.name);
+    try std.testing.expectEqual(Type.f64, temp.ty);
+    switch (temp.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.add, b.op);
+            try std.testing.expect(b.lhs == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.lhs.literal.number);
+            try std.testing.expect(b.rhs == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.rhs.literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const inst = result.instructions[1];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.f64, inst.ty);
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.div, b.op);
+            try std.testing.expect(b.lhs == .ref);
+            try std.testing.expectEqualStrings("0", b.lhs.ref);
+            try std.testing.expect(b.rhs == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.rhs.literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: simple arithmetic 1 + 2" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "let x = 1 + 2");
+    defer result.deinit();
+
+    // Single instruction: %x : f64 = add 1 2
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    const inst = result.instructions[0];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.f64, inst.ty);
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.add, b.op);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: chained 1 + 2 * 3 respects precedence" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "let x = 1 + 2 * 3");
+    defer result.deinit();
+
+    // Should produce: %0 : f64 = mul 2 3, %x : f64 = add 1 %0
+    try std.testing.expectEqual(2, result.instructions.len);
+
+    const temp = result.instructions[0];
+    switch (temp.rhs) {
+        .builtin => |b| try std.testing.expectEqual(Op.mul, b.op),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const inst = result.instructions[1];
+    try std.testing.expectEqualStrings("x", inst.name);
+    switch (inst.rhs) {
+        .builtin => |b| try std.testing.expectEqual(Op.add, b.op),
+        else => return error.TestUnexpectedResult,
+    }
+}

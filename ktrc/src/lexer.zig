@@ -38,6 +38,18 @@ pub const Token = struct {
 
         /// `=` (assignment)
         equal,
+        /// `+`
+        plus,
+        /// `-`
+        minus,
+        /// `*`
+        star,
+        /// `/`
+        slash,
+        /// `(`
+        l_paren,
+        /// `)`
+        r_paren,
 
         // ------------------------------
         // Special
@@ -118,7 +130,7 @@ pub const Lexer = struct {
         }
         const suffix = self.input[suffix_start..self.i];
 
-        if (suffix.len > 0 and LengthUnit.map.has(suffix)) {
+        if (suffix.len > 0 and LengthUnit.fromStr(suffix) != null) {
             return .{ .tag = .dimension_literal, .start = start, .end = self.i };
         }
 
@@ -135,6 +147,12 @@ pub const Lexer = struct {
 
         const single_char_tag: ?Token.Tag = switch (c) {
             '=' => .equal,
+            '+' => .plus,
+            '-' => .minus,
+            '*' => .star,
+            '/' => .slash,
+            '(' => .l_paren,
+            ')' => .r_paren,
             else => null,
         };
         if (single_char_tag) |tag| {
@@ -271,5 +289,42 @@ test "lexer: decimal percentage literal" {
     try std.testing.expectEqual(pct.tag, .percentage_literal);
     try std.testing.expectEqualStrings(lex.lexeme(pct), "0.5%");
 
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: arithmetic operators" {
+    var lex = Lexer.init("a + b * 2");
+
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .plus);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .star);
+    try std.testing.expectEqual(lex.next().tag, .number_literal);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: parentheses" {
+    var lex = Lexer.init("(1 + 2)");
+
+    try std.testing.expectEqual(lex.next().tag, .l_paren);
+    try std.testing.expectEqual(lex.next().tag, .number_literal);
+    try std.testing.expectEqual(lex.next().tag, .plus);
+    try std.testing.expectEqual(lex.next().tag, .number_literal);
+    try std.testing.expectEqual(lex.next().tag, .r_paren);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: all arithmetic operators" {
+    var lex = Lexer.init("a + b - c * d / e");
+
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .plus);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .minus);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .star);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .slash);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
     try std.testing.expectEqual(lex.next().tag, .eof);
 }

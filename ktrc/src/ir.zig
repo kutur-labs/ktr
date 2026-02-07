@@ -6,18 +6,12 @@ pub const Type = enum(u8) {
     length,
     percentage,
 
-    pub const map = std.StaticStringMap(Type).initComptime(.{
-        .{ "f64", .f64 },
-        .{ "length", .length },
-        .{ "percentage", .percentage },
-    });
-
     pub fn toStr(self: Type) []const u8 {
         return @tagName(self);
     }
 
     pub fn fromStr(s: []const u8) ?Type {
-        return map.get(s);
+        return std.meta.stringToEnum(Type, s);
     }
 };
 
@@ -67,27 +61,61 @@ pub const Value = struct {
     }
 };
 
+pub const Op = enum(u8) {
+    add,
+    sub,
+    mul,
+    div,
+
+    pub fn toStr(self: Op) []const u8 {
+        return @tagName(self);
+    }
+
+    pub fn fromStr(s: []const u8) ?Op {
+        return std.meta.stringToEnum(Op, s);
+    }
+};
+
+pub const Operand = union(enum) {
+    /// Reference to another binding: `%name`.
+    ref: []const u8,
+    /// Literal value: `42`, `100mm`.
+    literal: Value,
+
+    pub fn eql(a: Operand, b: Operand) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .ref => |ar| std.mem.eql(u8, ar, b.ref),
+            .literal => |av| av.eql(b.literal),
+        };
+    }
+};
+
 pub const Inst = struct {
     name: []const u8,
     ty: Type,
     rhs: Rhs,
+
+    pub const Builtin = struct {
+        op: Op,
+        lhs: Operand,
+        rhs: Operand,
+    };
 
     pub const Rhs = union(enum) {
         /// Direct constant value: `%x : length = 100mm`.
         constant: Value,
         /// Alias of another binding: `%y : length = %x`.
         copy: []const u8,
+        /// Builtin operation: `%z : length = mul %x 2`.
+        builtin: Builtin,
 
         pub fn eql(a: Rhs, b: Rhs) bool {
+            if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
             return switch (a) {
-                .constant => |av| switch (b) {
-                    .constant => |bv| av.eql(bv),
-                    else => false,
-                },
-                .copy => |ar| switch (b) {
-                    .copy => |br| std.mem.eql(u8, ar, br),
-                    else => false,
-                },
+                .constant => |av| av.eql(b.constant),
+                .copy => |ar| std.mem.eql(u8, ar, b.copy),
+                .builtin => |ab| ab.op == b.builtin.op and ab.lhs.eql(b.builtin.lhs) and ab.rhs.eql(b.builtin.rhs),
             };
         }
     };
