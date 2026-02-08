@@ -5,7 +5,7 @@
   "version": "0.0.1",
   "scripts": {
     "sync-spec": "cp ../ktrc/spec/lang.md src/content/reference/02-language-reference.md",
-    "build:wasm": "cd ../ktrc && zig build wasm && cp zig-out/bin/ktrc.wasm ../website/public/ktrc.wasm",
+    "build:wasm": "cd ../ktrc && zig build wasm && cp zig-out/bin/ktrc.wasm ../website/public/ktrc.wasm && cd ../ktrr && zig build wasm && cp zig-out/bin/ktrr.wasm ../website/public/ktrr.wasm",
     "dev": "bun run sync-spec && astro dev",
     "build": "bun run sync-spec && astro build",
     "preview": "astro preview",

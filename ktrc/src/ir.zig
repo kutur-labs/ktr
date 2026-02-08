@@ -26,11 +26,7 @@ pub const Value = struct {
 
     /// Write the numeric part of the value, using integer form when possible.
     pub fn writeNumber(self: Value, writer: anytype) !void {
-        if (self.number == @trunc(self.number) and !std.math.isInf(self.number)) {
-            try writer.print("{d}", .{@as(i64, @intFromFloat(self.number))});
-        } else {
-            try writer.print("{d}", .{self.number});
-        }
+        try formatF64(writer, self.number);
     }
 
     /// Parse a numeric value with optional unit suffix.
@@ -147,6 +143,26 @@ pub const Ir = struct {
         return true;
     }
 };
+
+/// Write an f64 using integer form when the value is exactly representable
+/// as an integer (e.g. `100` instead of `1e2` or `100.0`).
+pub fn formatF64(writer: anytype, value: f64) !void {
+    if (value == @trunc(value) and !std.math.isInf(value)) {
+        try writer.print("{d}", .{@as(i64, @intFromFloat(value))});
+    } else {
+        try writer.print("{d}", .{value});
+    }
+}
+
+/// Returns true if a binding name is a compiler-generated temporary.
+/// Convention from lower.zig: temps are purely numeric (`0`, `1`, ...).
+pub fn isTemp(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| {
+        if (!std.ascii.isDigit(c)) return false;
+    }
+    return true;
+}
 
 // --- Tests ---
 

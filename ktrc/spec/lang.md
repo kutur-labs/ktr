@@ -425,6 +425,8 @@ The compiler currently implements the following subset:
 - [x] Poison type for error suppression
 - [x] IR lowering, emission, parsing, and decompilation
 - [x] Full roundtrip: `.ktr` → IR → `.ktrir` → IR → `.ktr`
+- [x] Runtime evaluator (`ktrr`) with unit normalization (cm → mm)
+- [x] Runtime WASM module with JSON output
 
 Planned (not yet implemented):
 

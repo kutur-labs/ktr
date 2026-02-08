@@ -5,7 +5,7 @@ const defaultCode = `let a = 100mm
 let b = 50%
 let c = 42.2
 let d = a * c
-let e = (a + 20mm) * c`;
+let e = (a + 20cm) * c`;
 ---
 
 <MainLayout headerBorder>
@@ -36,7 +36,7 @@ let e = (a + 20mm) * c`;
         <div id="editor-input" class="flex-1 min-h-0 overflow-hidden"></div>
       </div>
 
-      <!-- Right pane: .ktrir output -->
+      <!-- Right pane: .ktrir output + results -->
       <div
         class="flex-1 flex flex-col min-h-0 min-w-0 border-t md:border-t-0 border-border overflow-hidden"
       >
@@ -56,7 +56,7 @@ let e = (a + 20mm) * c`;
                 class="text-primary"></path>
             </svg>
             <span class="text-xs font-mono text-primary-muted-foreground"
-              >output.ktrir</span
+              >source.ktrir</span
             >
           </div>
           <span
@@ -65,14 +65,49 @@ let e = (a + 20mm) * c`;
           ></span>
         </div>
         <div id="editor-output" class="flex-1 min-h-0 overflow-hidden"></div>
+
+        <!-- Results panel -->
+        <div
+          id="results-panel"
+          class="hidden border-t border-border shrink-0 overflow-auto"
+          style="max-height: 40%;"
+        >
+          <div
+            class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border shrink-0"
+          >
+            <svg
+              class="size-2 md:size-2.5"
+              viewBox="0 0 1178 1178"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
+                fill="currentColor"
+                class="text-primary"></path>
+            </svg>
+            <span class="text-xs font-mono text-primary-muted-foreground"
+              >results</span
+            >
+          </div>
+          <div id="results-content" class="px-3 py-2 font-mono text-xs"></div>
+        </div>
       </div>
     </div>
 
-    <!-- Error bar -->
+    <!-- Bottom bar (fixed height to prevent layout shift) -->
     <div
-      id="error-bar"
-      class="hidden px-3 py-2 border-t border-primary/20 text-primary text-xs font-mono whitespace-pre-wrap shrink-0 max-h-24 overflow-auto"
+      class="flex items-center justify-between gap-4 px-3 border-t border-border shrink-0 h-8 overflow-hidden"
     >
+      <div
+        id="error-bar"
+        class="text-primary text-xs font-mono truncate flex-1"
+      >
+      </div>
+      <span
+        id="version-info"
+        class="text-[10px] font-mono text-primary-muted-foreground/40 shrink-0 whitespace-nowrap"
+      ></span>
     </div>
   </main>
 </MainLayout>
@@ -121,6 +156,7 @@ let e = (a + 20mm) * c`;
   // ─── WASM ─────────────────────────────────────────────────────────────────
 
   var wasm = null;
+  var wasmRuntime = null;
   var encoder = new TextEncoder();
   var decoder = new TextDecoder();
 
@@ -132,34 +168,44 @@ let e = (a + 20mm) * c`;
     );
   }
 
-  function writeToWasm(text) {
+  function loadRuntimeWasm() {
+    return WebAssembly.instantiateStreaming(fetch("/ktrr.wasm"), {}).then(
+      function (result) {
+        return result.instance.exports;
+      },
+    );
+  }
+
+  function writeToWasm(wasmInstance, text) {
     var encoded = encoder.encode(text);
-    var ptr = wasm.alloc(encoded.length);
+    var ptr = wasmInstance.alloc(encoded.length);
     if (ptr === 0) throw new Error("WASM alloc failed");
-    new Uint8Array(wasm.memory.buffer, ptr, encoded.length).set(encoded);
+    new Uint8Array(wasmInstance.memory.buffer, ptr, encoded.length).set(
+      encoded,
+    );
     return { ptr: ptr, len: encoded.length };
   }
 
-  function readFromWasm(ptr, len) {
+  function readFromWasm(wasmInstance, ptr, len) {
     if (ptr === 0 || len === 0) return "";
-    return decoder.decode(new Uint8Array(wasm.memory.buffer, ptr, len));
+    return decoder.decode(new Uint8Array(wasmInstance.memory.buffer, ptr, len));
   }
 
   function compileKtr(source) {
-    var input = writeToWasm(source);
+    var input = writeToWasm(wasm, source);
     try {
       var result = wasm.compile(input.ptr, input.len);
       if (result >= 0) {
         return {
           ok: true,
-          output: readFromWasm(wasm.get_output_ptr(), result),
+          output: readFromWasm(wasm, wasm.get_output_ptr(), result),
         };
       } else {
         var errPtr = wasm.get_error_ptr();
         var errLen = wasm.get_error_len();
         return {
           ok: false,
-          error: readFromWasm(errPtr, errLen) || "Compilation failed",
+          error: readFromWasm(wasm, errPtr, errLen) || "Compilation failed",
         };
       }
     } finally {
@@ -168,24 +214,50 @@ let e = (a + 20mm) * c`;
   }
 
   function decompileIr(irSource) {
-    var input = writeToWasm(irSource);
+    var input = writeToWasm(wasm, irSource);
     try {
       var result = wasm.decompile_ir(input.ptr, input.len);
       if (result >= 0) {
         return {
           ok: true,
-          output: readFromWasm(wasm.get_output_ptr(), result),
+          output: readFromWasm(wasm, wasm.get_output_ptr(), result),
         };
       } else {
         var errPtr = wasm.get_error_ptr();
         var errLen = wasm.get_error_len();
         return {
           ok: false,
-          error: readFromWasm(errPtr, errLen) || "Decompilation failed",
+          error: readFromWasm(wasm, errPtr, errLen) || "Decompilation failed",
         };
       }
     } finally {
       wasm.dealloc(input.ptr, input.len);
+    }
+  }
+
+  function evalIr(irSource) {
+    if (!wasmRuntime) return null;
+    var input = writeToWasm(wasmRuntime, irSource);
+    try {
+      var result = wasmRuntime.eval_ir(input.ptr, input.len);
+      if (result >= 0) {
+        var json = readFromWasm(
+          wasmRuntime,
+          wasmRuntime.get_output_ptr(),
+          result,
+        );
+        return { ok: true, bindings: JSON.parse(json) };
+      } else {
+        var errPtr = wasmRuntime.get_error_ptr();
+        var errLen = wasmRuntime.get_error_len();
+        return {
+          ok: false,
+          error:
+            readFromWasm(wasmRuntime, errPtr, errLen) || "Evaluation failed",
+        };
+      }
+    } finally {
+      wasmRuntime.dealloc(input.ptr, input.len);
     }
   }
 
@@ -427,6 +499,8 @@ let e = (a + 20mm) * c`;
 
     var statusEl = document.getElementById("status");
     var errorBar = document.getElementById("error-bar");
+    var resultsPanel = document.getElementById("results-panel");
+    var resultsContent = document.getElementById("results-content");
 
     // Guard: prevents programmatic setValue from triggering the other direction.
     var updating = false;
@@ -464,11 +538,9 @@ let e = (a + 20mm) * c`;
 
     function showError(msg) {
       errorBar.textContent = msg;
-      errorBar.classList.remove("hidden");
     }
 
     function hideError() {
-      errorBar.classList.add("hidden");
       errorBar.textContent = "";
     }
 
@@ -476,7 +548,54 @@ let e = (a + 20mm) * c`;
       monaco.editor.setModelMarkers(editor.getModel(), "ktrc", []);
     }
 
-    // .ktr → .ktrir
+    function formatNumber(v) {
+      return v === Math.trunc(v) && isFinite(v)
+        ? String(Math.trunc(v))
+        : String(v);
+    }
+
+    function formatType(binding) {
+      if (binding.type === "length") return binding.unit;
+      if (binding.type === "percentage") return "%";
+      return binding.type;
+    }
+
+    function showResults(bindings) {
+      resultsContent.innerHTML = "";
+      var table = document.createElement("table");
+      table.className = "w-full";
+      for (var i = 0; i < bindings.length; i++) {
+        var b = bindings[i];
+        var tr = document.createElement("tr");
+        tr.className = "leading-relaxed";
+
+        var tdName = document.createElement("td");
+        tdName.className = "pr-4 text-primary-muted-foreground/70 select-all";
+        tdName.textContent = b.name;
+
+        var tdValue = document.createElement("td");
+        tdValue.className = "text-foreground tabular-nums select-all";
+        tdValue.textContent = formatNumber(b.value);
+
+        var tdType = document.createElement("td");
+        tdType.className = "pl-2 text-primary-muted-foreground/40";
+        tdType.textContent = formatType(b);
+
+        tr.appendChild(tdName);
+        tr.appendChild(tdValue);
+        tr.appendChild(tdType);
+        table.appendChild(tr);
+      }
+      resultsContent.appendChild(table);
+      resultsPanel.classList.remove("hidden");
+    }
+
+    function hideResults() {
+      resultsPanel.classList.add("hidden");
+      resultsContent.innerHTML = "";
+    }
+
+    // .ktr → .ktrir → eval
     function runCompile() {
       if (!wasm) return;
 
@@ -486,6 +605,7 @@ let e = (a + 20mm) * c`;
         outputEditor.setValue("");
         updating = false;
         hideError();
+        hideResults();
         clearMarkers(inputEditor);
         statusEl.textContent = "";
         return;
@@ -501,11 +621,19 @@ let e = (a + 20mm) * c`;
         updating = false;
         hideError();
         clearMarkers(inputEditor);
-        statusEl.textContent = "Compiled in " + elapsed;
+
+        // Evaluate the IR.
+        var evalResult = evalIr(result.output);
+        if (evalResult && evalResult.ok) {
+          var evalElapsed = formatMs(performance.now() - t0);
+          showResults(evalResult.bindings);
+          statusEl.textContent = "Compiled + evaluated in " + evalElapsed;
+        } else if (evalResult && !evalResult.ok) {
+          showError("eval: " + evalResult.error);
+          statusEl.textContent = "Compiled in " + elapsed;
+        }
       } else {
-        updating = true;
-        outputEditor.setValue("");
-        updating = false;
+        // Keep last valid IR and results visible; just show markers + error bar.
         var markers = parseErrors(result.error);
         monaco.editor.setModelMarkers(inputEditor.getModel(), "ktrc", markers);
         var messages = markers.map(function (m) {
@@ -526,6 +654,7 @@ let e = (a + 20mm) * c`;
         inputEditor.setValue("");
         updating = false;
         hideError();
+        hideResults();
         clearMarkers(outputEditor);
         statusEl.textContent = "";
         return;
@@ -542,10 +671,21 @@ let e = (a + 20mm) * c`;
         hideError();
         clearMarkers(outputEditor);
         clearMarkers(inputEditor);
-        statusEl.textContent = "Decompiled in " + elapsed;
+
+        // Also evaluate the IR.
+        var evalResult = evalIr(irSource);
+        if (evalResult && evalResult.ok) {
+          showResults(evalResult.bindings);
+          statusEl.textContent =
+            "Decompiled + evaluated in " + formatMs(performance.now() - t0);
+        } else if (evalResult && !evalResult.ok) {
+          showError("eval: " + evalResult.error);
+          statusEl.textContent = "Decompiled in " + elapsed;
+        }
       } else {
+        // Keep last valid source and results visible; just show error bar.
         showError(result.error);
-        statusEl.textContent = "Error in " + ms + "ms";
+        statusEl.textContent = "Error in " + elapsed;
       }
     }
 
@@ -569,11 +709,16 @@ let e = (a + 20mm) * c`;
 
     // ── Boot WASM ─────────────────────────────────────────────────────────────
 
+    var versionEl = document.getElementById("version-info");
+
     statusEl.textContent = "Loading WASM\u2026";
-    loadWasm()
-      .then(function (exports) {
-        wasm = exports;
+    Promise.all([loadWasm(), loadRuntimeWasm()])
+      .then(function (results) {
+        wasm = results[0];
+        wasmRuntime = results[1];
         statusEl.textContent = "Ready";
+        versionEl.textContent =
+          "ktr 0.1.0 \u00b7 ktr-ir v1 \u00b7 Zig WASM runtime \u00b7 Release";
         runCompile();
       })
       .catch(function (err) {

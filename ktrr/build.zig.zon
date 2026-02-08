@@ -1,0 +1,14 @@
+.{
+    .name = .ktrr,
+    .version = "0.0.0",
+    .fingerprint = 0x3d9964f6f6d9cc80,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .ktrc = .{ .path = "../ktrc" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

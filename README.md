@@ -10,9 +10,7 @@ ktr is a domain-specific language for parametric sewing patterns. It describes
 patterns as geometry and constraints that compile into a stable, diffable
 intermediate representation (`.ktrir`) consumed by runtimes.
 
-> **Status:** Early development (v0.1.0). The compiler currently handles `let`
-> bindings with literals and identifier references. See
-> [Implementation Status](#implementation-status) below.
+> **Status:** Early development (v0.1.0). See [Implementation Status](#implementation-status) below.
 
 ## Example
 
@@ -61,14 +59,17 @@ ktr is designed for reproducible pattern drafting, not for general-purpose progr
 ktrc/              Compiler (Zig)
   src/               Lexer, parser, sema, IR lowering, emit/parse/decompile
   spec/              Formal grammars (ktr.ebnf, ktrir.ebnf) and language reference
+ktrr/              Runtime (Zig)
+  src/               IR evaluator, unit normalization, WASM bindings
 website/           Documentation site (Astro)
   src/pages/         Landing page, reference docs, playground
   public/ktrc.wasm   Compiler WASM module for the browser playground
+  public/ktrr.wasm   Runtime WASM module for the browser playground
 ```
 
 ## Building
 
-The compiler requires [Zig](https://ziglang.org/) (0.14+).
+The compiler and runtime require [Zig](https://ziglang.org/) (0.15+).
 The WASM build also requires [`wasm-opt`](https://github.com/WebAssembly/binaryen) from Binaryen for post-processing optimisations:
 
 ```sh
@@ -101,6 +102,16 @@ cat file.ktr | zig build run -- compile | zig build run -- decompile
 zig build wasm
 ```
 
+```sh
+cd ktrr
+
+# Run all tests
+zig build test
+
+# Build the WASM module (requires wasm-opt from Binaryen)
+zig build wasm
+```
+
 The website requires [Bun](https://bun.sh/):
 
 ```sh
@@ -123,6 +134,8 @@ The compiler currently implements:
 
 - [x] `let` bindings with literal values (`100mm`, `50%`, `42`)
 - [x] `let` bindings with identifier references (`let y = x`)
+- [x] Arithmetic expressions (`+`, `-`, `*`, `/`) with precedence
+- [x] Parenthesized grouping
 - [x] Type inference for `length`, `percentage`, `f64`
 - [x] Duplicate binding detection
 - [x] Undefined reference detection
@@ -130,11 +143,12 @@ The compiler currently implements:
 - [x] IR lowering, emission, parsing, and decompilation
 - [x] Full roundtrip: `.ktr` → IR → `.ktrir` → IR → `.ktr`
 - [x] WASM build target with browser playground
+- [x] Runtime evaluator (`ktrr`) with unit normalization (cm → mm)
+- [x] Runtime WASM module with JSON output
 
 Planned:
 
 - [ ] `input` declarations with assertion blocks
-- [ ] Arithmetic expressions (`+`, `-`, `*`, `/`)
 - [ ] `fn` definitions with typed parameters
 - [ ] Function calls and constructor calls (`point()`, `bezier()`)
 - [ ] Method calls (`.up()`, `.dx()`, etc.)

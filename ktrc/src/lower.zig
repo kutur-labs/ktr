@@ -51,8 +51,7 @@ const Lowerer = struct {
 
     /// Look up the IR type for an expression node via the sema result.
     fn nodeType(self: *Lowerer, node_index: ast.NodeIndex) Type {
-        const sema_ty = self.sema_result.node_types.get(node_index).?;
-        return mapType(sema_ty);
+        return mapType(self.sema_result.node_types[node_index]);
     }
 
     /// Lower an expression node. For leaf nodes, returns an Operand directly
@@ -100,6 +99,11 @@ const Lowerer = struct {
 
     /// Lower a let binding. Delegates to `lowerExpr` for all node types,
     /// then converts the resulting operand into a named instruction.
+    ///
+    /// When the expression is a binary op, `lowerExpr` emits a temp-named
+    /// instruction and returns a ref to it. We rename that instruction in
+    /// place to avoid an extra copy. The assertion guards this assumption:
+    /// if `lowerExpr` changes to emit multiple instructions, it will fire.
     fn lowerLet(self: *Lowerer, name: []const u8, sym: sema.Symbol) LowerError!void {
         const node = self.tree.nodes.get(sym.node);
         const ty = mapType(sym.ty);
@@ -111,12 +115,13 @@ const Lowerer = struct {
 
         switch (operand) {
             .ref => |ref_name| {
-                // Only rename when lowerExpr actually emitted a temp instruction
-                // for this expression. Otherwise emit a copy (e.g. identifier refs).
                 if (emitted_new) {
-                    const len = self.instructions.items.len;
-                    self.instructions.items[len - 1].name = duped_name;
+                    // Rename the last emitted temp to the user binding name.
+                    const last = &self.instructions.items[self.instructions.items.len - 1];
+                    std.debug.assert(std.mem.eql(u8, last.name, ref_name));
+                    last.name = duped_name;
                 } else {
+                    // Identifier ref: emit a copy instruction.
                     try self.instructions.append(self.ally, .{
                         .name = duped_name,
                         .ty = ty,

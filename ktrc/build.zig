@@ -4,6 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // ── Public module (consumed by ktrr and other dependents) ──
+
+    _ = b.addModule("ktr_ir", .{
+        .root_source_file = b.path("src/ktr_ir.zig"),
+    });
+
     // ── Library tests ───────────────────────────────────────────
 
     const lib_mod = b.createModule(.{

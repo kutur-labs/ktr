@@ -27,8 +27,9 @@ pub const Sema = struct {
     /// Ordered map of bindings in source order. The lowerer depends on
     /// iteration order matching definition order.
     symbols: std.StringArrayHashMap(Symbol),
-    /// Resolved type for each expression node index.
-    node_types: std.AutoHashMap(ast.NodeIndex, Type),
+    /// Resolved type for each AST node, indexed by NodeIndex.
+    /// Only expression nodes have meaningful values; other slots are undefined.
+    node_types: []Type,
     diagnostics: []const Diagnostic,
     allocator: std.mem.Allocator,
 
@@ -39,7 +40,7 @@ pub const Sema = struct {
 
     pub fn deinit(self: *Sema) void {
         self.symbols.deinit();
-        self.node_types.deinit();
+        self.allocator.free(self.node_types);
         self.allocator.free(self.diagnostics);
         self.* = undefined;
     }
@@ -49,7 +50,7 @@ const Analyzer = struct {
     tree: *const Ast,
     allocator: std.mem.Allocator,
     symbols: std.StringArrayHashMap(Symbol),
-    node_types: std.AutoHashMap(ast.NodeIndex, Type),
+    node_types: []Type,
     diagnostics: std.ArrayList(Diagnostic),
 
     fn addDiag(self: *Analyzer, tag: Diagnostic.Tag, token: u32) std.mem.Allocator.Error!void {
@@ -106,7 +107,7 @@ const Analyzer = struct {
             // as values in let_statement; root and let_statement never appear here.
             .root, .let_statement => unreachable,
         };
-        try self.node_types.put(node_index, ty);
+        self.node_types[node_index] = ty;
         return ty;
     }
 
@@ -145,15 +146,17 @@ const Analyzer = struct {
 
 /// Run semantic analysis on a parsed AST.
 pub fn analyze(allocator: std.mem.Allocator, tree: *const Ast) std.mem.Allocator.Error!Sema {
+    const node_types = try allocator.alloc(Type, tree.nodes.len);
+    errdefer allocator.free(node_types);
+
     var a = Analyzer{
         .tree = tree,
         .allocator = allocator,
         .symbols = std.StringArrayHashMap(Symbol).init(allocator),
-        .node_types = std.AutoHashMap(ast.NodeIndex, Type).init(allocator),
+        .node_types = node_types,
         .diagnostics = std.ArrayList(Diagnostic).empty,
     };
     errdefer a.symbols.deinit();
-    errdefer a.node_types.deinit();
     errdefer a.diagnostics.deinit(allocator);
 
     try a.analyzeRoot();

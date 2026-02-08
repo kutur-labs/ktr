@@ -58,14 +58,6 @@ fn buildUseCounts(allocator: std.mem.Allocator, instructions: []const Inst) !std
     return counts;
 }
 
-/// Check if a name looks like a compiler-generated temp (all digits).
-fn isTempName(name: []const u8) bool {
-    for (name) |c| {
-        if (!std.ascii.isDigit(c)) return false;
-    }
-    return name.len > 0;
-}
-
 /// Build a map from instruction name to instruction for temp inlining lookups.
 fn buildInstMap(allocator: std.mem.Allocator, instructions: []const Inst) !std.StringHashMap(Inst) {
     var map = std.StringHashMap(Inst).init(allocator);
@@ -112,7 +104,7 @@ const Decompiler = struct {
     }
 
     fn isSingleUseTemp(self: *const Decompiler, name: []const u8) bool {
-        return isTempName(name) and (self.use_counts.get(name) orelse 0) == 1;
+        return ir.isTemp(name) and (self.use_counts.get(name) orelse 0) == 1;
     }
 
     /// Write a bare literal value (number with optional unit suffix).
