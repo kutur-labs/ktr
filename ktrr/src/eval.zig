@@ -8,13 +8,20 @@ const Type = ktr_ir.Type;
 const Op = ktr_ir.Op;
 const Operand = ktr_ir.Operand;
 const LengthUnit = ktr_ir.LengthUnit;
+const Input = ktr_ir.Input;
 
 // ─── Public types ───────────────────────────────────────────────────────────
+
+pub const InputOverride = struct {
+    name: []const u8,
+    value: f64, // already normalized to mm for lengths
+};
 
 pub const Binding = struct {
     name: []const u8,
     ty: Type,
     value: f64, // normalized: lengths in mm
+    is_input: bool,
 };
 
 pub const Result = struct {
@@ -34,13 +41,25 @@ pub const EvalError = error{
 
 // ─── Evaluator ──────────────────────────────────────────────────────────────
 
+/// Look up an override value by name. Returns null if no override exists.
+fn findOverride(overrides: []const InputOverride, name: []const u8) ?f64 {
+    for (overrides) |ov| {
+        if (std.mem.eql(u8, ov.name, name)) return ov.value;
+    }
+    return null;
+}
+
 /// Evaluate a parsed IR program and return all user-defined bindings with
 /// their resolved values. Compiler temporaries (numeric names) are evaluated
 /// but excluded from the result.
 ///
+/// `overrides` provides runtime input overrides. For each input, if a
+/// matching override exists, its value is used instead of the default.
+/// Pass `&.{}` for no overrides.
+///
 /// The returned `Result` is self-contained; the caller may free the `Ir`
 /// immediately after this function returns.
-pub fn eval(gpa: Allocator, ir: Ir) EvalError!Result {
+pub fn eval(gpa: Allocator, ir_data: Ir, overrides: []const InputOverride) EvalError!Result {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
     const ally = arena.allocator();
@@ -51,7 +70,20 @@ pub fn eval(gpa: Allocator, ir: Ir) EvalError!Result {
     // Collect user-visible bindings (skip compiler temps).
     var bindings = std.ArrayListUnmanaged(Binding){};
 
-    for (ir.instructions) |inst| {
+    // Process inputs first: apply overrides or use defaults.
+    for (ir_data.inputs) |input| {
+        const value = findOverride(overrides, input.name) orelse normalizeToMm(input.default);
+        try env.put(ally, input.name, value);
+        try bindings.append(ally, .{
+            .name = try ally.dupe(u8, input.name),
+            .ty = input.ty,
+            .value = value,
+            .is_input = true,
+        });
+    }
+
+    // Process instructions.
+    for (ir_data.instructions) |inst| {
         const value = switch (inst.rhs) {
             .constant => |v| normalizeToMm(v),
             .copy => |name| env.get(name) orelse return error.UndefinedReference,
@@ -66,6 +98,7 @@ pub fn eval(gpa: Allocator, ir: Ir) EvalError!Result {
                 .name = try ally.dupe(u8, inst.name),
                 .ty = inst.ty,
                 .value = value,
+                .is_input = false,
             });
         }
     }
@@ -120,9 +153,13 @@ const isTemp = ktr_ir.isTemp;
 const parse = ktr_ir.parse;
 
 fn evalSource(allocator: Allocator, source: []const u8) (EvalError || ktr_ir.ParseError)!Result {
-    var ir = try parse(allocator, source);
-    defer ir.deinit();
-    return eval(allocator, ir);
+    return evalSourceWithOverrides(allocator, source, &.{});
+}
+
+fn evalSourceWithOverrides(allocator: Allocator, source: []const u8, overrides: []const InputOverride) (EvalError || ktr_ir.ParseError)!Result {
+    var ir_data = try parse(allocator, source);
+    defer ir_data.deinit();
+    return eval(allocator, ir_data, overrides);
 }
 
 /// Find a binding by name in results.
@@ -359,4 +396,136 @@ test "eval: full user example" {
     try std.testing.expectEqual(Type.length, e.ty);
     // (100 + 20) * 42.2 = 120 * 42.2 = 5064
     try std.testing.expectEqual(@as(f64, 5064.0), e.value);
+}
+
+test "eval: input with default value" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+    );
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.bindings.len);
+    const b = result.bindings[0];
+    try std.testing.expectEqualStrings("head", b.name);
+    try std.testing.expectEqual(Type.length, b.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), b.value);
+    try std.testing.expect(b.is_input);
+}
+
+test "eval: input referenced in instruction" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\%x : length = mul %head 2
+    );
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.bindings.len);
+
+    const head = findBinding(result.bindings, "head").?;
+    try std.testing.expectEqual(@as(f64, 100.0), head.value);
+    try std.testing.expect(head.is_input);
+
+    const x = findBinding(result.bindings, "x").?;
+    try std.testing.expectEqual(@as(f64, 200.0), x.value);
+    try std.testing.expect(!x.is_input);
+}
+
+test "eval: input override replaces default" {
+    const ally = std.testing.allocator;
+    var result = try evalSourceWithOverrides(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+    , &.{.{ .name = "head", .value = 120.0 }});
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.bindings.len);
+    try std.testing.expectEqual(@as(f64, 120.0), result.bindings[0].value);
+    try std.testing.expect(result.bindings[0].is_input);
+}
+
+test "eval: override propagates to downstream instructions" {
+    const ally = std.testing.allocator;
+    var result = try evalSourceWithOverrides(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\%x : length = mul %head 2
+    , &.{.{ .name = "head", .value = 150.0 }});
+    defer result.deinit();
+
+    const head = findBinding(result.bindings, "head").?;
+    try std.testing.expectEqual(@as(f64, 150.0), head.value);
+
+    const x = findBinding(result.bindings, "x").?;
+    // 150 * 2 = 300
+    try std.testing.expectEqual(@as(f64, 300.0), x.value);
+}
+
+test "eval: unknown override is ignored" {
+    const ally = std.testing.allocator;
+    var result = try evalSourceWithOverrides(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+    , &.{.{ .name = "nonexistent", .value = 999.0 }});
+    defer result.deinit();
+
+    // Override for unknown name is ignored; default is used.
+    try std.testing.expectEqual(@as(f64, 100.0), result.bindings[0].value);
+}
+
+test "eval: multiple inputs with overrides" {
+    const ally = std.testing.allocator;
+    var result = try evalSourceWithOverrides(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\input %chest : length = 900mm
+        \\
+        \\%sum : length = add %head %chest
+    , &.{.{ .name = "chest", .value = 1000.0 }});
+    defer result.deinit();
+
+    const head = findBinding(result.bindings, "head").?;
+    try std.testing.expectEqual(@as(f64, 100.0), head.value); // default
+
+    const chest = findBinding(result.bindings, "chest").?;
+    try std.testing.expectEqual(@as(f64, 1000.0), chest.value); // overridden
+
+    const sum = findBinding(result.bindings, "sum").?;
+    try std.testing.expectEqual(@as(f64, 1100.0), sum.value); // 100 + 1000
+}
+
+test "eval: let bindings have is_input false" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%x : f64 = 42
+    );
+    defer result.deinit();
+
+    try std.testing.expect(!result.bindings[0].is_input);
+}
+
+test "eval: input cm unit normalized" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %w : length = 2cm
+    );
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(f64, 20.0), result.bindings[0].value);
+    try std.testing.expect(result.bindings[0].is_input);
 }

@@ -13,6 +13,8 @@ pub const Token = struct {
 
         /// `let`
         let,
+        /// `input`
+        input,
 
         // ------------------------------
         // Identifiers
@@ -94,6 +96,7 @@ pub const Lexer = struct {
 
     const keywords = std.StaticStringMap(Token.Tag).initComptime(.{
         .{ "let", .let },
+        .{ "input", .input },
     });
 
     fn readIdentifier(self: *Lexer) Token {
@@ -327,4 +330,24 @@ test "lexer: all arithmetic operators" {
     try std.testing.expectEqual(lex.next().tag, .slash);
     try std.testing.expectEqual(lex.next().tag, .identifier);
     try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: input keyword" {
+    var lex = Lexer.init("input head = 100mm");
+
+    try std.testing.expectEqual(lex.next().tag, .input);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .equal);
+    try std.testing.expectEqual(lex.next().tag, .dimension_literal);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: input as identifier outside keyword context" {
+    var lex = Lexer.init("let input_size = 5");
+
+    try std.testing.expectEqual(lex.next().tag, .let);
+
+    const ident = lex.next();
+    try std.testing.expectEqual(ident.tag, .identifier);
+    try std.testing.expectEqualStrings(lex.lexeme(ident), "input_size");
 }

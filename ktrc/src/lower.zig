@@ -11,13 +11,14 @@ const LengthUnit = ir.LengthUnit;
 const Type = ir.Type;
 const Op = ir.Op;
 const Operand = ir.Operand;
+const Input = ir.Input;
 
 /// Map a sema type to an IR type. Poison must never reach this point.
 fn mapType(sema_ty: sema.Type) Type {
     return switch (sema_ty) {
         .length => .length,
         .percentage => .percentage,
-        .number => .f64,
+        .f64 => .f64,
         .poison => unreachable,
     };
 }
@@ -26,7 +27,8 @@ const Lowerer = struct {
     tree: *const Ast,
     sema_result: *const Sema,
     ally: std.mem.Allocator,
-    instructions: std.ArrayList(Inst),
+    inputs: std.ArrayListUnmanaged(Input),
+    instructions: std.ArrayListUnmanaged(Inst),
     temp_counter: u32,
 
     const LowerError = std.mem.Allocator.Error || error{InvalidLiteral};
@@ -54,19 +56,25 @@ const Lowerer = struct {
         return mapType(self.sema_result.node_types[node_index]);
     }
 
+    /// Parse an AST literal node (dimension, percentage, or number) into an IR Value.
+    fn parseLiteralValue(self: *Lowerer, node_index: ast.NodeIndex) error{InvalidLiteral}!Value {
+        const node = self.tree.nodes.get(node_index);
+        const text = self.tree.tokenSlice(node.main_token);
+        return switch (node.tag) {
+            .dimension_literal, .number_literal => Value.parse(text) catch return error.InvalidLiteral,
+            .percentage_literal => Value.parse(text[0 .. text.len - 1]) catch return error.InvalidLiteral,
+            else => error.InvalidLiteral,
+        };
+    }
+
     /// Lower an expression node. For leaf nodes, returns an Operand directly
     /// (no instruction emitted). For binary ops, emits intermediate instructions
     /// with temp names and returns a ref operand to the result.
     fn lowerExpr(self: *Lowerer, node_index: ast.NodeIndex) LowerError!Operand {
         const node = self.tree.nodes.get(node_index);
         return switch (node.tag) {
-            .dimension_literal, .number_literal => {
-                const text = self.tree.tokenSlice(node.main_token);
-                return .{ .literal = Value.parse(text) catch return error.InvalidLiteral };
-            },
-            .percentage_literal => {
-                const text = self.tree.tokenSlice(node.main_token);
-                return .{ .literal = Value.parse(text[0 .. text.len - 1]) catch return error.InvalidLiteral };
+            .dimension_literal, .number_literal, .percentage_literal => {
+                return .{ .literal = try self.parseLiteralValue(node_index) };
             },
             .identifier_ref => {
                 return .{ .ref = try self.ally.dupe(u8, self.tree.tokenSlice(node.main_token)) };
@@ -93,7 +101,7 @@ const Lowerer = struct {
 
                 return .{ .ref = name };
             },
-            .root, .let_statement => unreachable,
+            .root, .let_statement, .input_statement => unreachable,
         };
     }
 
@@ -138,6 +146,18 @@ const Lowerer = struct {
             },
         }
     }
+
+    /// Lower an input declaration. The parser enforces that the default is a
+    /// leaf literal; `parseLiteralValue` returns InvalidLiteral for anything else.
+    fn lowerInput(self: *Lowerer, name: []const u8, sym: sema.Symbol) LowerError!void {
+        const node = self.tree.nodes.get(sym.node);
+        const value = try self.parseLiteralValue(node.data.lhs);
+        try self.inputs.append(self.ally, .{
+            .name = try self.ally.dupe(u8, name),
+            .ty = mapType(sym.ty),
+            .default = value,
+        });
+    }
 };
 
 /// Lower a semantically-analyzed AST into the intermediate representation.
@@ -156,7 +176,8 @@ pub fn lower(gpa: std.mem.Allocator, tree: *const Ast, sema_result: *const Sema)
         .tree = tree,
         .sema_result = sema_result,
         .ally = ally,
-        .instructions = std.ArrayList(Inst).empty,
+        .inputs = .{},
+        .instructions = .{},
         .temp_counter = 0,
     };
 
@@ -164,11 +185,15 @@ pub fn lower(gpa: std.mem.Allocator, tree: *const Ast, sema_result: *const Sema)
     const values = sema_result.symbols.values();
 
     for (keys, values) |name, sym| {
-        try l.lowerLet(name, sym);
+        switch (sym.kind) {
+            .input => try l.lowerInput(name, sym),
+            .let_binding => try l.lowerLet(name, sym),
+        }
     }
 
     return .{
         .version = 1,
+        .inputs = try l.inputs.toOwnedSlice(ally),
         .instructions = try l.instructions.toOwnedSlice(ally),
         .arena = arena,
     };
@@ -402,6 +427,94 @@ test "lower: chained 1 + 2 * 3 respects precedence" {
     try std.testing.expectEqualStrings("x", inst.name);
     switch (inst.rhs) {
         .builtin => |b| try std.testing.expectEqual(Op.add, b.op),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: input head = 100mm" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "input head = 100mm");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    try std.testing.expectEqual(0, result.instructions.len);
+
+    const input = result.inputs[0];
+    try std.testing.expectEqualStrings("head", input.name);
+    try std.testing.expectEqual(Type.length, input.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), input.default.number);
+    try std.testing.expectEqual(LengthUnit.mm, input.default.unit.?);
+}
+
+test "lower: input with cm unit" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "input w = 25cm");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    const input = result.inputs[0];
+    try std.testing.expectEqual(@as(f64, 25.0), input.default.number);
+    try std.testing.expectEqual(LengthUnit.cm, input.default.unit.?);
+}
+
+test "lower: input f64" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "input scale = 42");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    const input = result.inputs[0];
+    try std.testing.expectEqualStrings("scale", input.name);
+    try std.testing.expectEqual(Type.f64, input.ty);
+    try std.testing.expectEqual(@as(f64, 42.0), input.default.number);
+    try std.testing.expectEqual(@as(?LengthUnit, null), input.default.unit);
+}
+
+test "lower: input percentage" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "input ease = 50%");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    const input = result.inputs[0];
+    try std.testing.expectEqual(Type.percentage, input.ty);
+    try std.testing.expectEqual(@as(f64, 50.0), input.default.number);
+}
+
+test "lower: mixed inputs and lets" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "input head = 100mm let x = head");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    try std.testing.expectEqualStrings("head", result.inputs[0].name);
+    try std.testing.expectEqualStrings("x", result.instructions[0].name);
+
+    switch (result.instructions[0].rhs) {
+        .copy => |name| try std.testing.expectEqualStrings("head", name),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: input with arithmetic in let" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "input head = 100mm let x = head * 2");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    const inst = result.instructions[0];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.length, inst.ty);
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.mul, b.op);
+            try std.testing.expect(b.lhs == .ref);
+            try std.testing.expectEqualStrings("head", b.lhs.ref);
+        },
         else => return error.TestUnexpectedResult,
     }
 }

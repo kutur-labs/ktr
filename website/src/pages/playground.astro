@@ -1,11 +1,15 @@
 ---
 import MainLayout from "../layouts/main-layout.astro";
 
-const defaultCode = `let a = 100mm
-let b = 50%
-let c = 42.2
-let d = a * c
-let e = (a + 20cm) * c`;
+const defaultCode = `input chest = 960mm
+input waist = 780mm
+input ease = 60mm
+
+let half_chest = (chest + ease) / 2
+let half_waist = (waist + ease) / 2
+let dart = half_chest - half_waist
+let side_dart = dart / 3
+let front_dart = dart * 2 / 3`;
 ---
 
 <MainLayout headerBorder>
@@ -66,11 +70,11 @@ let e = (a + 20cm) * c`;
         </div>
         <div id="editor-output" class="flex-1 min-h-0 overflow-hidden"></div>
 
-        <!-- Results panel -->
+        <!-- Inputs panel -->
         <div
-          id="results-panel"
+          id="inputs-panel"
           class="hidden border-t border-border shrink-0 overflow-auto"
-          style="max-height: 40%;"
+          style="max-height: 35%;"
         >
           <div
             class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border shrink-0"
@@ -87,7 +91,34 @@ let e = (a + 20cm) * c`;
                 class="text-primary"></path>
             </svg>
             <span class="text-xs font-mono text-primary-muted-foreground"
-              >results</span
+              >inputs</span
+            >
+          </div>
+          <div id="inputs-content" class="px-3 py-2 font-mono text-xs"></div>
+        </div>
+
+        <!-- Results panel -->
+        <div
+          id="results-panel"
+          class="hidden border-t border-border shrink-0 overflow-auto"
+          style="max-height: 35%;"
+        >
+          <div
+            class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border shrink-0"
+          >
+            <svg
+              class="size-2 md:size-2.5"
+              viewBox="0 0 1178 1178"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
+                fill="currentColor"
+                class="text-primary"></path>
+            </svg>
+            <span class="text-xs font-mono text-primary-muted-foreground"
+              >output</span
             >
           </div>
           <div id="results-content" class="px-3 py-2 font-mono text-xs"></div>
@@ -235,8 +266,20 @@ let e = (a + 20cm) * c`;
     }
   }
 
-  function evalIr(irSource) {
+  function evalIr(irSource, overrides) {
     if (!wasmRuntime) return null;
+
+    // Set overrides via the WASM API.
+    wasmRuntime.clear_overrides();
+    if (overrides) {
+      var keys = Object.keys(overrides);
+      for (var i = 0; i < keys.length; i++) {
+        var name = writeToWasm(wasmRuntime, keys[i]);
+        wasmRuntime.set_override(name.ptr, name.len, overrides[keys[i]]);
+        wasmRuntime.dealloc(name.ptr, name.len);
+      }
+    }
+
     var input = writeToWasm(wasmRuntime, irSource);
     try {
       var result = wasmRuntime.eval_ir(input.ptr, input.len);
@@ -317,6 +360,7 @@ let e = (a + 20cm) * c`;
       tokenizer: {
         root: [
           [/#.*$/, "comment"],
+          [/\binput\b/, "keyword"],
           [/%[a-zA-Z_]\w*/, "variable"],
           [/\b(length|percentage|f64)\b/, "type"],
           [/\b\d+(\.\d+)?(mm|cm)\b/, "number.unit"],
@@ -499,11 +543,17 @@ let e = (a + 20cm) * c`;
 
     var statusEl = document.getElementById("status");
     var errorBar = document.getElementById("error-bar");
+    var inputsPanel = document.getElementById("inputs-panel");
+    var inputsContent = document.getElementById("inputs-content");
     var resultsPanel = document.getElementById("results-panel");
     var resultsContent = document.getElementById("results-content");
 
     // Guard: prevents programmatic setValue from triggering the other direction.
     var updating = false;
+
+    // Current input overrides and last compiled IR for re-evaluation.
+    var currentOverrides = {};
+    var lastCompiledIr = "";
 
     // Parse error strings like "4:9:3: error: undefined reference"
     // into Monaco marker objects.
@@ -549,9 +599,11 @@ let e = (a + 20cm) * c`;
     }
 
     function formatNumber(v) {
-      return v === Math.trunc(v) && isFinite(v)
-        ? String(Math.trunc(v))
-        : String(v);
+      if (!isFinite(v)) return String(v);
+      if (v === Math.trunc(v)) return String(Math.trunc(v));
+      // Round to 4 decimal places to avoid float noise like 35.666666666666664
+      var rounded = Math.round(v * 10000) / 10000;
+      return String(rounded);
     }
 
     function formatType(binding) {
@@ -561,24 +613,37 @@ let e = (a + 20cm) * c`;
     }
 
     function showResults(bindings) {
+      // Filter out input bindings — they're shown in the inputs panel.
+      var computed = bindings.filter(function (b) {
+        return !b.isInput;
+      });
+
+      if (computed.length === 0) {
+        hideResults();
+        return;
+      }
+
       resultsContent.innerHTML = "";
       var table = document.createElement("table");
       table.className = "w-full";
-      for (var i = 0; i < bindings.length; i++) {
-        var b = bindings[i];
+      for (var i = 0; i < computed.length; i++) {
+        var b = computed[i];
         var tr = document.createElement("tr");
         tr.className = "leading-relaxed";
 
         var tdName = document.createElement("td");
-        tdName.className = "pr-4 text-primary-muted-foreground/70 select-all";
+        tdName.className =
+          "pr-4 text-primary-muted-foreground/70 select-all whitespace-nowrap";
         tdName.textContent = b.name;
 
         var tdValue = document.createElement("td");
-        tdValue.className = "text-foreground tabular-nums select-all";
+        tdValue.className =
+          "text-foreground tabular-nums select-all text-right w-full";
         tdValue.textContent = formatNumber(b.value);
 
         var tdType = document.createElement("td");
-        tdType.className = "pl-2 text-primary-muted-foreground/40";
+        tdType.className =
+          "pl-2 text-primary-muted-foreground/40 whitespace-nowrap";
         tdType.textContent = formatType(b);
 
         tr.appendChild(tdName);
@@ -595,6 +660,138 @@ let e = (a + 20cm) * c`;
       resultsContent.innerHTML = "";
     }
 
+    function showInputs(bindings) {
+      // Extract only the input bindings.
+      var inputs = bindings.filter(function (b) {
+        return b.isInput;
+      });
+
+      if (inputs.length === 0) {
+        hideInputs();
+        return;
+      }
+
+      inputsContent.innerHTML = "";
+      var table = document.createElement("table");
+      table.className = "w-full";
+
+      for (var i = 0; i < inputs.length; i++) {
+        (function (inp) {
+          var tr = document.createElement("tr");
+          tr.className = "leading-relaxed";
+
+          // Name label
+          var tdName = document.createElement("td");
+          tdName.className =
+            "pr-3 text-primary-muted-foreground/70 whitespace-nowrap align-middle";
+          tdName.textContent = inp.name;
+
+          // Editable value
+          var tdValue = document.createElement("td");
+          tdValue.className = "w-full align-middle";
+
+          var inputEl = document.createElement("input");
+          inputEl.type = "number";
+          inputEl.step = "any";
+          inputEl.className =
+            "w-full bg-transparent border border-border rounded px-2 py-0.5 " +
+            "text-foreground tabular-nums font-mono text-xs " +
+            "focus:outline-none focus:border-primary/40 " +
+            "appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield]";
+
+          // Show the current override if set, otherwise the evaluated value.
+          var currentVal =
+            inp.name in currentOverrides
+              ? currentOverrides[inp.name]
+              : inp.value;
+          inputEl.value = currentVal;
+          inputEl.dataset.name = inp.name;
+          inputEl.dataset.defaultValue = String(inp.value);
+
+          inputEl.addEventListener("input", function () {
+            var val = parseFloat(inputEl.value);
+            if (isNaN(val)) {
+              delete currentOverrides[inp.name];
+            } else {
+              currentOverrides[inp.name] = val;
+            }
+            resetBtn.classList.toggle(
+              "invisible",
+              !(inp.name in currentOverrides) ||
+                currentOverrides[inp.name] ===
+                  parseFloat(inputEl.dataset.defaultValue),
+            );
+            reEvaluate();
+          });
+
+          tdValue.appendChild(inputEl);
+
+          // Unit label
+          var tdUnit = document.createElement("td");
+          tdUnit.className =
+            "pl-2 text-primary-muted-foreground/40 whitespace-nowrap align-middle";
+          tdUnit.textContent = formatType(inp);
+
+          // Reset button
+          var tdReset = document.createElement("td");
+          tdReset.className = "pl-1 align-middle";
+
+          var resetBtn = document.createElement("button");
+          resetBtn.className =
+            "text-primary-muted-foreground/30 hover:text-primary-muted-foreground/70 " +
+            "text-[10px] leading-none cursor-pointer invisible";
+          resetBtn.textContent = "\u21BA";
+          resetBtn.title = "Reset to default";
+
+          // Show reset button if override differs from default.
+          if (
+            inp.name in currentOverrides &&
+            currentOverrides[inp.name] !==
+              parseFloat(inputEl.dataset.defaultValue)
+          ) {
+            resetBtn.classList.remove("invisible");
+          }
+
+          resetBtn.addEventListener("click", function () {
+            delete currentOverrides[inp.name];
+            inputEl.value = parseFloat(inputEl.dataset.defaultValue);
+            resetBtn.classList.add("invisible");
+            reEvaluate();
+          });
+
+          tdReset.appendChild(resetBtn);
+
+          tr.appendChild(tdName);
+          tr.appendChild(tdValue);
+          tr.appendChild(tdUnit);
+          tr.appendChild(tdReset);
+          table.appendChild(tr);
+        })(inputs[i]);
+      }
+
+      inputsContent.appendChild(table);
+      inputsPanel.classList.remove("hidden");
+    }
+
+    function hideInputs() {
+      inputsPanel.classList.add("hidden");
+      inputsContent.innerHTML = "";
+    }
+
+    // Re-evaluate the last compiled IR with current overrides.
+    function reEvaluate() {
+      if (!lastCompiledIr) return;
+      var t0 = performance.now();
+      var evalResult = evalIr(lastCompiledIr, currentOverrides);
+      if (evalResult && evalResult.ok) {
+        showResults(evalResult.bindings);
+        statusEl.textContent =
+          "Evaluated in " + formatMs(performance.now() - t0);
+      } else if (evalResult && !evalResult.ok) {
+        showError("eval: " + evalResult.error);
+      }
+    }
+
     // .ktr → .ktrir → eval
     function runCompile() {
       if (!wasm) return;
@@ -605,9 +802,12 @@ let e = (a + 20cm) * c`;
         outputEditor.setValue("");
         updating = false;
         hideError();
+        hideInputs();
         hideResults();
         clearMarkers(inputEditor);
         statusEl.textContent = "";
+        lastCompiledIr = "";
+        currentOverrides = {};
         return;
       }
 
@@ -622,13 +822,19 @@ let e = (a + 20cm) * c`;
         hideError();
         clearMarkers(inputEditor);
 
+        // Store for re-evaluation and reset overrides on recompile.
+        lastCompiledIr = result.output;
+        currentOverrides = {};
+
         // Evaluate the IR.
-        var evalResult = evalIr(result.output);
+        var evalResult = evalIr(result.output, currentOverrides);
         if (evalResult && evalResult.ok) {
           var evalElapsed = formatMs(performance.now() - t0);
+          showInputs(evalResult.bindings);
           showResults(evalResult.bindings);
           statusEl.textContent = "Compiled + evaluated in " + evalElapsed;
         } else if (evalResult && !evalResult.ok) {
+          hideInputs();
           showError("eval: " + evalResult.error);
           statusEl.textContent = "Compiled in " + elapsed;
         }
@@ -654,9 +860,12 @@ let e = (a + 20cm) * c`;
         inputEditor.setValue("");
         updating = false;
         hideError();
+        hideInputs();
         hideResults();
         clearMarkers(outputEditor);
         statusEl.textContent = "";
+        lastCompiledIr = "";
+        currentOverrides = {};
         return;
       }
 
@@ -672,13 +881,19 @@ let e = (a + 20cm) * c`;
         clearMarkers(outputEditor);
         clearMarkers(inputEditor);
 
+        // Store for re-evaluation and reset overrides on decompile.
+        lastCompiledIr = irSource;
+        currentOverrides = {};
+
         // Also evaluate the IR.
-        var evalResult = evalIr(irSource);
+        var evalResult = evalIr(irSource, currentOverrides);
         if (evalResult && evalResult.ok) {
+          showInputs(evalResult.bindings);
           showResults(evalResult.bindings);
           statusEl.textContent =
             "Decompiled + evaluated in " + formatMs(performance.now() - t0);
         } else if (evalResult && !evalResult.ok) {
+          hideInputs();
           showError("eval: " + evalResult.error);
           statusEl.textContent = "Decompiled in " + elapsed;
         }

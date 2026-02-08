@@ -144,9 +144,46 @@ const Parser = struct {
         });
     }
 
+    fn parseInputStatement(self: *Parser) Error!ast.NodeIndex {
+        const input_token = self.cursor;
+        self.advance();
+        _ = try self.expect(.identifier, .expected_identifier);
+        _ = try self.expect(.equal, .expected_equal);
+
+        // Input defaults must be a single literal value (not an expression).
+        const value_node = try self.parseLiteral();
+
+        return self.addNode(.{
+            .tag = .input_statement,
+            .main_token = input_token,
+            .data = .{ .lhs = value_node, .rhs = 0 },
+        });
+    }
+
+    /// Parse a single literal token: dimension, percentage, or number.
+    fn parseLiteral(self: *Parser) Error!ast.NodeIndex {
+        const node_tag: ast.Node.Tag = switch (self.currentTag()) {
+            .dimension_literal => .dimension_literal,
+            .percentage_literal => .percentage_literal,
+            .number_literal => .number_literal,
+            else => {
+                try self.addDiag(.expected_literal);
+                return error.ParseFailed;
+            },
+        };
+        const token = self.cursor;
+        self.advance();
+        return self.addNode(.{
+            .tag = node_tag,
+            .main_token = token,
+            .data = .{ .lhs = 0, .rhs = 0 },
+        });
+    }
+
     fn parseStatement(self: *Parser) Error!ast.NodeIndex {
         return switch (self.currentTag()) {
             .let => self.parseLetStatement(),
+            .input => self.parseInputStatement(),
             else => {
                 try self.addDiag(.unexpected_token);
                 return error.ParseFailed;
@@ -157,7 +194,8 @@ const Parser = struct {
     /// Skip tokens until a potential statement boundary is found.
     fn synchronize(self: *Parser) void {
         while (self.currentTag() != .eof) {
-            if (self.currentTag() == .let) return;
+            const tag = self.currentTag();
+            if (tag == .let or tag == .input) return;
             self.advance();
         }
     }
@@ -429,4 +467,63 @@ test "parse: missing closing paren emits diagnostic" {
     try std.testing.expect(tree.hasErrors());
     try std.testing.expect(tree.diagnostics.len >= 1);
     try std.testing.expectEqual(.expected_r_paren, tree.diagnostics[0].tag);
+}
+
+test "parse: input head = 100mm" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(1, statements.len);
+
+    const input_node = tree.nodes.get(statements[0]);
+    try std.testing.expectEqual(.input_statement, input_node.tag);
+    try std.testing.expectEqualStrings("head", tree.tokenSlice(input_node.main_token + 1));
+
+    const value_node = tree.nodes.get(input_node.data.lhs);
+    try std.testing.expectEqual(.dimension_literal, value_node.tag);
+    try std.testing.expectEqualStrings("100mm", tree.tokenSlice(value_node.main_token));
+}
+
+test "parse: mixed input and let" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm let x = head";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(2, statements.len);
+
+    try std.testing.expectEqual(.input_statement, tree.nodes.get(statements[0]).tag);
+    try std.testing.expectEqual(.let_statement, tree.nodes.get(statements[1]).tag);
+}
+
+test "parse: input rejects expression default" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 50 + 50";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    // The parser accepts `input head = 50` as the input statement,
+    // then `+ 50` becomes an unexpected token at the top level.
+    // The input itself parses successfully with 50 as the default.
+    try std.testing.expect(tree.hasErrors());
+}
+
+test "parse: input rejects identifier default" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = other";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(tree.hasErrors());
+    try std.testing.expectEqual(.expected_literal, tree.diagnostics[0].tag);
 }

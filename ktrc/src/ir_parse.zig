@@ -7,6 +7,7 @@ const LengthUnit = ir.LengthUnit;
 const Type = ir.Type;
 const Op = ir.Op;
 const Operand = ir.Operand;
+const Input = ir.Input;
 
 pub const Error = error{
     InvalidFormat,
@@ -75,6 +76,29 @@ fn findOperandBoundary(text: []const u8) ?usize {
     return null;
 }
 
+/// Parsed left-hand side of a declaration: `%name : type = rhs_text`.
+const DeclLhs = struct {
+    name: []const u8,
+    ty: Type,
+    rhs_text: []const u8,
+};
+
+/// Parse the common `%name : type = <rhs>` pattern shared by input and
+/// instruction lines. Returns the parsed name, type, and the raw RHS text.
+fn parseDeclLhs(ally: std.mem.Allocator, text: []const u8) Error!DeclLhs {
+    const eq_split = splitOnce(text, '=') orelse return error.InvalidFormat;
+    const lhs_part = std.mem.trimRight(u8, eq_split[0], " \t");
+    const rhs_text = skipWs(eq_split[1]);
+    const colon_split = splitOnce(lhs_part, ':') orelse return error.InvalidFormat;
+    const ref_text = std.mem.trimRight(u8, colon_split[0], " \t");
+    const type_text = std.mem.trim(u8, colon_split[1], " \t");
+    return .{
+        .name = try parseName(ally, ref_text),
+        .ty = Type.fromStr(type_text) orelse return error.InvalidFormat,
+        .rhs_text = rhs_text,
+    };
+}
+
 /// Parse `.ktrir` text into an `Ir`.
 ///
 /// The returned `Ir` owns all its memory via an arena; call `Ir.deinit()`
@@ -84,7 +108,8 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
     errdefer arena.deinit();
     const ally = arena.allocator();
 
-    var instructions = std.ArrayList(Inst).empty;
+    var inputs: std.ArrayListUnmanaged(Input) = .{};
+    var instructions: std.ArrayListUnmanaged(Inst) = .{};
     var version: u32 = 1;
     var header_seen = false;
 
@@ -109,44 +134,47 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
             continue;
         }
 
-        // Instruction line: `%<name> : <type> = <rhs>`
         if (!header_seen) return error.InvalidFormat;
 
-        // Split on '=' to get LHS and RHS.
-        const eq_split = splitOnce(line, '=') orelse return error.InvalidFormat;
-        const lhs_part = std.mem.trimRight(u8, eq_split[0], " \t");
-        const rhs_text = skipWs(eq_split[1]);
+        // Input line: `input %<name> : <type> = <literal>`
+        if (std.mem.startsWith(u8, line, "input ")) {
+            const lhs = try parseDeclLhs(ally, skipWs(line["input ".len..]));
+            const default = Value.parse(lhs.rhs_text) catch return error.InvalidFormat;
 
-        // Parse LHS: `%name : type`
-        const colon_split = splitOnce(lhs_part, ':') orelse return error.InvalidFormat;
-        const ref_text = std.mem.trimRight(u8, colon_split[0], " \t");
-        const type_text = std.mem.trim(u8, colon_split[1], " \t");
+            try inputs.append(ally, .{
+                .name = lhs.name,
+                .ty = lhs.ty,
+                .default = default,
+            });
+            continue;
+        }
 
-        const name = try parseName(ally, ref_text);
-        const ty = Type.fromStr(type_text) orelse return error.InvalidFormat;
+        // Instruction line: `%<name> : <type> = <rhs>`
+        const lhs = try parseDeclLhs(ally, line);
 
         // Parse RHS: `%name` (copy), `op operand operand` (builtin), or literal (constant).
         const rhs: Inst.Rhs = blk: {
-            if (rhs_text.len > 0 and rhs_text[0] == '%') {
-                break :blk .{ .copy = try parseName(ally, rhs_text) };
+            if (lhs.rhs_text.len > 0 and lhs.rhs_text[0] == '%') {
+                break :blk .{ .copy = try parseName(ally, lhs.rhs_text) };
             }
             // Try to parse as builtin op: first token is the op keyword.
-            if (try parseBuiltinRhs(ally, rhs_text)) |builtin_rhs| {
+            if (try parseBuiltinRhs(ally, lhs.rhs_text)) |builtin_rhs| {
                 break :blk builtin_rhs;
             }
             // Fall back to literal constant.
-            break :blk .{ .constant = Value.parse(rhs_text) catch return error.InvalidFormat };
+            break :blk .{ .constant = Value.parse(lhs.rhs_text) catch return error.InvalidFormat };
         };
 
         try instructions.append(ally, .{
-            .name = name,
-            .ty = ty,
+            .name = lhs.name,
+            .ty = lhs.ty,
             .rhs = rhs,
         });
     }
 
     return .{
         .version = version,
+        .inputs = try inputs.toOwnedSlice(ally),
         .instructions = try instructions.toOwnedSlice(ally),
         .arena = arena,
     };
@@ -379,4 +407,62 @@ test "parse: builtin op with dimension literals" {
         },
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "parse: input declaration" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    try std.testing.expectEqual(0, result.instructions.len);
+
+    const input = result.inputs[0];
+    try std.testing.expectEqualStrings("head", input.name);
+    try std.testing.expectEqual(Type.length, input.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), input.default.number);
+    try std.testing.expectEqual(LengthUnit.mm, input.default.unit.?);
+}
+
+test "parse: input with instructions" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\%x : length = %head
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    try std.testing.expectEqualStrings("head", result.inputs[0].name);
+    try std.testing.expectEqualStrings("x", result.instructions[0].name);
+}
+
+test "parse: multiple inputs" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\input %chest : length = 900mm
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.inputs.len);
+    try std.testing.expectEqualStrings("head", result.inputs[0].name);
+    try std.testing.expectEqualStrings("chest", result.inputs[1].name);
 }

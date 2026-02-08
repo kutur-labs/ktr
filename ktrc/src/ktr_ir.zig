@@ -7,6 +7,7 @@ const ir = @import("ir.zig");
 const ir_parse = @import("ir_parse.zig");
 
 pub const Ir = ir.Ir;
+pub const Input = ir.Input;
 pub const Inst = ir.Inst;
 pub const Value = ir.Value;
 pub const Type = ir.Type;

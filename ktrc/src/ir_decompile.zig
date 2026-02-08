@@ -150,14 +150,24 @@ const Decompiler = struct {
 
 /// Reconstruct `.ktr` source from an `Ir`.
 ///
-/// Instructions that are single-use compiler temporaries (numeric names used
-/// exactly once) are inlined into their parent expression. All other
-/// instructions emit a `let` binding.
+/// Input entries are emitted as `input name = value`. Instructions that are
+/// single-use compiler temporaries (numeric names used exactly once) are
+/// inlined into their parent expression. All other instructions emit a `let`
+/// binding.
 pub fn decompile(allocator: std.mem.Allocator, ir_data: Ir, writer: anytype) !void {
     var dc = try Decompiler.init(allocator, ir_data.instructions);
     defer dc.deinit();
 
     var first = true;
+
+    for (ir_data.inputs) |input| {
+        if (!first) try writer.writeByte('\n');
+        first = false;
+
+        try writer.print("input {s} = ", .{input.name});
+        try writeKtrValue(writer, input.default, input.ty);
+    }
+
     for (ir_data.instructions) |inst| {
         // Skip single-use temps -- they will be inlined.
         if (dc.isSingleUseTemp(inst.name)) continue;
@@ -179,7 +189,7 @@ pub fn decompile(allocator: std.mem.Allocator, ir_data: Ir, writer: anytype) !vo
     }
 
     // Trailing newline if there was any output.
-    if (ir_data.instructions.len > 0) {
+    if (ir_data.inputs.len > 0 or ir_data.instructions.len > 0) {
         try writer.writeByte('\n');
     }
 }
@@ -191,7 +201,7 @@ const sema = @import("sema.zig");
 const lower = @import("lower.zig");
 
 fn decompileToString(allocator: std.mem.Allocator, ir_data: Ir) ![]const u8 {
-    var buf = std.ArrayList(u8).empty;
+    var buf: std.ArrayListUnmanaged(u8) = .{};
     errdefer buf.deinit(allocator);
     try decompile(allocator, ir_data, buf.writer(allocator));
     return buf.toOwnedSlice(allocator);
@@ -353,7 +363,7 @@ test "decompile roundtrip: source -> lower -> decompile -> re-lower -> compare" 
     defer ir1.deinit();
 
     // Decompile back to .ktr source.
-    var buf = std.ArrayList(u8).empty;
+    var buf: std.ArrayListUnmanaged(u8) = .{};
     defer buf.deinit(allocator);
     try decompile(allocator, ir1, buf.writer(allocator));
     const ktr_text = try buf.toOwnedSlice(allocator);
@@ -460,7 +470,7 @@ test "decompile roundtrip: arithmetic source -> lower -> decompile -> re-lower" 
     var ir1 = try lower.lower(allocator, &tree1, &sem1);
     defer ir1.deinit();
 
-    var buf = std.ArrayList(u8).empty;
+    var buf: std.ArrayListUnmanaged(u8) = .{};
     defer buf.deinit(allocator);
     try decompile(allocator, ir1, buf.writer(allocator));
     const ktr_text = try buf.toOwnedSlice(allocator);
@@ -496,7 +506,113 @@ test "decompile roundtrip: grouped expression" {
     var ir1 = try lower.lower(allocator, &tree1, &sem1);
     defer ir1.deinit();
 
-    var buf = std.ArrayList(u8).empty;
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(allocator);
+    try decompile(allocator, ir1, buf.writer(allocator));
+    const ktr_text = try buf.toOwnedSlice(allocator);
+    defer allocator.free(ktr_text);
+
+    const ktr_z = try allocator.dupeZ(u8, ktr_text);
+    defer allocator.free(ktr_z);
+
+    var tree2 = try parser.parse(allocator, ktr_z);
+    defer tree2.deinit();
+
+    var sem2 = try sema.analyze(allocator, &tree2);
+    defer sem2.deinit();
+
+    try std.testing.expect(!sem2.hasErrors());
+
+    var ir2 = try lower.lower(allocator, &tree2, &sem2);
+    defer ir2.deinit();
+
+    try std.testing.expect(ir1.eql(ir2));
+}
+
+test "decompile: input declaration" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const inputs = try ally.alloc(ir.Input, 1);
+    inputs[0] = .{
+        .name = try ally.dupe(u8, "head"),
+        .ty = .length,
+        .default = .{ .number = 100.0, .unit = .mm },
+    };
+
+    var ir_data = Ir{ .inputs = inputs, .instructions = &.{}, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try decompileToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("input head = 100mm\n", output);
+}
+
+test "decompile: input with percentage" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const inputs = try ally.alloc(ir.Input, 1);
+    inputs[0] = .{
+        .name = try ally.dupe(u8, "ease"),
+        .ty = .percentage,
+        .default = .{ .number = 50.0, .unit = null },
+    };
+
+    var ir_data = Ir{ .inputs = inputs, .instructions = &.{}, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try decompileToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("input ease = 50%\n", output);
+}
+
+test "decompile: input before let" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const inputs = try ally.alloc(ir.Input, 1);
+    inputs[0] = .{
+        .name = try ally.dupe(u8, "head"),
+        .ty = .length,
+        .default = .{ .number = 100.0, .unit = .mm },
+    };
+
+    const insts = try ally.alloc(Inst, 1);
+    insts[0] = .{
+        .name = try ally.dupe(u8, "x"),
+        .ty = .length,
+        .rhs = .{ .copy = try ally.dupe(u8, "head") },
+    };
+
+    var ir_data = Ir{ .inputs = inputs, .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try decompileToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("input head = 100mm\nlet x = head\n", output);
+}
+
+test "decompile roundtrip: input" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm\nlet x = head * 2";
+
+    var tree1 = try parser.parse(allocator, source);
+    defer tree1.deinit();
+
+    var sem1 = try sema.analyze(allocator, &tree1);
+    defer sem1.deinit();
+
+    var ir1 = try lower.lower(allocator, &tree1, &sem1);
+    defer ir1.deinit();
+
+    var buf: std.ArrayListUnmanaged(u8) = .{};
     defer buf.deinit(allocator);
     try decompile(allocator, ir1, buf.writer(allocator));
     const ktr_text = try buf.toOwnedSlice(allocator);

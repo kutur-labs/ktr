@@ -87,6 +87,16 @@ pub const Operand = union(enum) {
     }
 };
 
+pub const Input = struct {
+    name: []const u8,
+    ty: Type,
+    default: Value,
+
+    pub fn eql(a: Input, b: Input) bool {
+        return std.mem.eql(u8, a.name, b.name) and a.ty == b.ty and a.default.eql(b.default);
+    }
+};
+
 pub const Inst = struct {
     name: []const u8,
     ty: Type,
@@ -125,6 +135,7 @@ pub const Inst = struct {
 
 pub const Ir = struct {
     version: u32 = 1,
+    inputs: []const Input = &.{},
     instructions: []const Inst,
     arena: std.heap.ArenaAllocator,
 
@@ -136,6 +147,10 @@ pub const Ir = struct {
     /// Compares two Ir values for structural equality (ignoring arena).
     pub fn eql(a: Ir, b: Ir) bool {
         if (a.version != b.version) return false;
+        if (a.inputs.len != b.inputs.len) return false;
+        for (a.inputs, b.inputs) |ai, bi| {
+            if (!ai.eql(bi)) return false;
+        }
         if (a.instructions.len != b.instructions.len) return false;
         for (a.instructions, b.instructions) |ai, bi| {
             if (!ai.eql(bi)) return false;
@@ -147,7 +162,9 @@ pub const Ir = struct {
 /// Write an f64 using integer form when the value is exactly representable
 /// as an integer (e.g. `100` instead of `1e2` or `100.0`).
 pub fn formatF64(writer: anytype, value: f64) !void {
-    if (value == @trunc(value) and !std.math.isInf(value)) {
+    const max_safe: f64 = @floatFromInt(@as(i64, std.math.maxInt(i64)));
+    const min_safe: f64 = @floatFromInt(@as(i64, std.math.minInt(i64)));
+    if (value == @trunc(value) and value >= min_safe and value <= max_safe) {
         try writer.print("{d}", .{@as(i64, @intFromFloat(value))});
     } else {
         try writer.print("{d}", .{value});
@@ -155,7 +172,9 @@ pub fn formatF64(writer: anytype, value: f64) !void {
 }
 
 /// Returns true if a binding name is a compiler-generated temporary.
-/// Convention from lower.zig: temps are purely numeric (`0`, `1`, ...).
+/// Convention: temps are purely numeric (`0`, `1`, ...). This is safe because
+/// the parser requires identifiers to start with [a-zA-Z_], so user names
+/// can never be purely numeric.
 pub fn isTemp(name: []const u8) bool {
     if (name.len == 0) return false;
     for (name) |c| {

@@ -5,6 +5,7 @@ const Inst = ir.Inst;
 const Value = ir.Value;
 const Type = ir.Type;
 const Operand = ir.Operand;
+const Input = ir.Input;
 
 /// Write a numeric value with optional unit suffix.
 fn writeValue(writer: anytype, value: Value) !void {
@@ -26,7 +27,17 @@ fn writeOperand(writer: anytype, operand: Operand) !void {
 pub fn emit(ir_data: Ir, writer: anytype) !void {
     try writer.print("# ktr-ir v{d}\n", .{ir_data.version});
 
-    if (ir_data.instructions.len > 0) {
+    if (ir_data.inputs.len > 0 or ir_data.instructions.len > 0) {
+        try writer.writeByte('\n');
+    }
+
+    for (ir_data.inputs) |input| {
+        try writer.print("input %{s} : {s} = ", .{ input.name, input.ty.toStr() });
+        try writeValue(writer, input.default);
+        try writer.writeByte('\n');
+    }
+
+    if (ir_data.inputs.len > 0 and ir_data.instructions.len > 0) {
         try writer.writeByte('\n');
     }
 
@@ -55,7 +66,7 @@ const parser = @import("parser.zig");
 const sema = @import("sema.zig");
 
 fn emitToString(allocator: std.mem.Allocator, ir_data: Ir) ![]const u8 {
-    var buf = std.ArrayList(u8).empty;
+    var buf: std.ArrayListUnmanaged(u8) = .{};
     errdefer buf.deinit(allocator);
     try emit(ir_data, buf.writer(allocator));
     return buf.toOwnedSlice(allocator);
@@ -271,6 +282,89 @@ test "roundtrip: arithmetic emit then parse" {
 test "roundtrip: complex expression emit then parse" {
     const allocator = std.testing.allocator;
     const source: [:0]const u8 = "let x = (2 + 2) / 2";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try sema.analyze(allocator, &tree);
+    defer sem.deinit();
+
+    var lowered = try lower.lower(allocator, &tree, &sem);
+    defer lowered.deinit();
+
+    const text = try emitToString(allocator, lowered);
+    defer allocator.free(text);
+
+    var parsed = try ir_parse.parse(allocator, text);
+    defer parsed.deinit();
+
+    try std.testing.expect(lowered.eql(parsed));
+}
+
+test "emit: input declaration" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const inputs = try ally.alloc(ir.Input, 1);
+    inputs[0] = .{
+        .name = try ally.dupe(u8, "head"),
+        .ty = .length,
+        .default = .{ .number = 100.0, .unit = .mm },
+    };
+
+    var ir_data = Ir{ .inputs = inputs, .instructions = &.{}, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try emitToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+    , output);
+}
+
+test "emit: input and instructions separated by blank line" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const inputs = try ally.alloc(ir.Input, 1);
+    inputs[0] = .{
+        .name = try ally.dupe(u8, "head"),
+        .ty = .length,
+        .default = .{ .number = 100.0, .unit = .mm },
+    };
+
+    const insts = try ally.alloc(Inst, 1);
+    insts[0] = .{
+        .name = try ally.dupe(u8, "x"),
+        .ty = .length,
+        .rhs = .{ .copy = try ally.dupe(u8, "head") },
+    };
+
+    var ir_data = Ir{ .inputs = inputs, .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try emitToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\%x : length = %head
+        \\
+    , output);
+}
+
+test "roundtrip: input emit then parse" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm let x = head * 2";
 
     var tree = try parser.parse(allocator, source);
     defer tree.deinit();

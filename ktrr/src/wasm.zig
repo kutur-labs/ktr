@@ -46,6 +46,9 @@ fn writeBindingsJson(bindings: []const eval_mod.Binding) error{OutOfMemory}![]u8
             jw.write("mm") catch return error.OutOfMemory;
         }
 
+        jw.objectField("isInput") catch return error.OutOfMemory;
+        jw.write(binding.is_input) catch return error.OutOfMemory;
+
         jw.endObject() catch return error.OutOfMemory;
     }
 
@@ -59,6 +62,15 @@ fn writeBindingsJson(bindings: []const eval_mod.Binding) error{OutOfMemory}![]u8
 fn writeJsonNumber(jw: *std.json.Stringify, value: f64) std.json.Stringify.Error!void {
     try ktr_ir.formatF64(jw, value);
 }
+
+// ─── Override storage ───────────────────────────────────────────────────────
+
+const Override = struct {
+    name: []const u8,
+    value: f64,
+};
+
+var override_list = std.ArrayList(Override).empty;
 
 // ─── Exported WASM API ──────────────────────────────────────────────────────
 
@@ -75,7 +87,39 @@ export fn dealloc(ptr: usize, len: usize) void {
     allocator.free(slice[0..len]);
 }
 
+/// Set an input override by name. Called from JS before eval_ir.
+/// The name is a WASM memory pointer+length. The value is already in mm.
+export fn set_override(name_ptr: usize, name_len: usize, value: f64) void {
+    if (name_ptr == 0 or name_len == 0) return;
+    const raw: [*]const u8 = @ptrFromInt(name_ptr);
+    const name_slice = raw[0..name_len];
+
+    // Check if override already exists and update it.
+    for (override_list.items) |*ov| {
+        if (std.mem.eql(u8, ov.name, name_slice)) {
+            ov.value = value;
+            return;
+        }
+    }
+
+    // New override: dupe the name.
+    const name = allocator.dupe(u8, name_slice) catch return;
+    override_list.append(allocator, .{ .name = name, .value = value }) catch {
+        allocator.free(name);
+    };
+}
+
+/// Clear all input overrides. Called from JS when source is recompiled.
+export fn clear_overrides() void {
+    for (override_list.items) |ov| {
+        allocator.free(ov.name);
+    }
+    override_list.clearRetainingCapacity();
+}
+
 /// Evaluate `.ktrir` text and return JSON results.
+///
+/// Uses overrides previously set via set_override / clear_overrides.
 ///
 /// Returns the output length on success (>= 0), or a negative error code:
 ///   -1  out of memory / internal error
@@ -89,16 +133,27 @@ export fn eval_ir(input_ptr: usize, input_len: usize) i32 {
     const raw: [*]const u8 = @ptrFromInt(input_ptr);
     const source = raw[0..input_len];
 
+    // Build overrides slice from the global list.
+    var eval_overrides = std.ArrayList(eval_mod.InputOverride).empty;
+    defer eval_overrides.deinit(allocator);
+
+    for (override_list.items) |ov| {
+        eval_overrides.append(allocator, .{
+            .name = ov.name,
+            .value = ov.value,
+        }) catch return -1;
+    }
+
     // Parse IR.
-    var ir = ktr_ir.parse(allocator, source) catch {
+    var ir_data = ktr_ir.parse(allocator, source) catch {
         const msg = "invalid .ktrir input";
         error_buf = allocator.dupe(u8, msg) catch null;
         return -2;
     };
-    defer ir.deinit();
+    defer ir_data.deinit();
 
     // Evaluate.
-    var result = eval_mod.eval(allocator, ir) catch |err| {
+    var result = eval_mod.eval(allocator, ir_data, eval_overrides.items) catch |err| {
         const msg: []const u8 = switch (err) {
             error.UndefinedReference => "undefined reference",
             error.DivisionByZero => "division by zero",

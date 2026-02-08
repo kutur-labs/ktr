@@ -427,10 +427,12 @@ The compiler currently implements the following subset:
 - [x] Full roundtrip: `.ktr` → IR → `.ktrir` → IR → `.ktr`
 - [x] Runtime evaluator (`ktrr`) with unit normalization (cm → mm)
 - [x] Runtime WASM module with JSON output
+- [x] `input` declarations with literal defaults (`input head = 100mm`)
+- [x] Runtime input overrides (parametric evaluation)
 
 Planned (not yet implemented):
 
-- [ ] `input` declarations with assertion blocks
+- [ ] `input` assertion blocks (`assert head > 0mm`)
 - [ ] `fn` definitions with typed parameters
 - [ ] Function calls and constructor calls (`point()`, `bezier()`)
 - [ ] Method calls (`.up()`, `.dx()`, etc.)

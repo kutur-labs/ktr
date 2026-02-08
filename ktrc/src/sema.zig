@@ -9,15 +9,18 @@ pub const Type = enum {
     /// A percentage value (%).
     percentage,
     /// A bare number without a unit.
-    number,
+    f64,
     /// Unresolvable value; suppresses cascading diagnostics.
     poison,
 };
 
 pub const Symbol = struct {
     ty: Type,
-    /// AST node index of the defining let_statement.
+    /// AST node index of the defining statement (let_statement or input_statement).
     node: ast.NodeIndex,
+    kind: Kind,
+
+    pub const Kind = enum { let_binding, input };
 };
 
 /// Result of semantic analysis. Symbol names are slices borrowed from the
@@ -62,13 +65,14 @@ const Analyzer = struct {
         for (statements) |stmt_index| {
             const node = self.tree.nodes.get(stmt_index);
             switch (node.tag) {
-                .let_statement => try self.analyzeLet(node, stmt_index),
+                .let_statement => try self.analyzeBinding(node, stmt_index, .let_binding),
+                .input_statement => try self.analyzeBinding(node, stmt_index, .input),
                 else => {},
             }
         }
     }
 
-    fn analyzeLet(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex) std.mem.Allocator.Error!void {
+    fn analyzeBinding(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex, kind: Symbol.Kind) std.mem.Allocator.Error!void {
         const name = self.tree.tokenSlice(node.main_token + 1);
 
         if (self.symbols.contains(name)) {
@@ -78,7 +82,7 @@ const Analyzer = struct {
 
         const ty = try self.resolveType(node.data.lhs);
 
-        try self.symbols.put(name, .{ .ty = ty, .node = node_index });
+        try self.symbols.put(name, .{ .ty = ty, .node = node_index, .kind = kind });
     }
 
     fn resolveType(self: *Analyzer, node_index: ast.NodeIndex) std.mem.Allocator.Error!Type {
@@ -86,7 +90,7 @@ const Analyzer = struct {
         const ty: Type = switch (node.tag) {
             .dimension_literal => .length,
             .percentage_literal => .percentage,
-            .number_literal => .number,
+            .number_literal => .f64,
             .identifier_ref => blk: {
                 const ref_name = self.tree.tokenSlice(node.main_token);
                 if (self.symbols.get(ref_name)) |sym| break :blk sym.ty;
@@ -104,8 +108,9 @@ const Analyzer = struct {
                 break :blk try self.resolveArithmeticType(node.tag, lhs_ty, rhs_ty, node.main_token);
             },
             // Structurally impossible: the parser only produces expression nodes
-            // as values in let_statement; root and let_statement never appear here.
-            .root, .let_statement => unreachable,
+            // as values in statements; root, let_statement and input_statement
+            // never appear here.
+            .root, .let_statement, .input_statement => unreachable,
         };
         self.node_types[node_index] = ty;
         return ty;
@@ -118,26 +123,26 @@ const Analyzer = struct {
         rhs: Type,
         token: u32,
     ) std.mem.Allocator.Error!Type {
-        // number op number -> number
-        if (lhs == .number and rhs == .number) return .number;
+        // f64 op f64 -> f64
+        if (lhs == .f64 and rhs == .f64) return .f64;
 
         // length +/- length -> length
         if (lhs == .length and rhs == .length and (op == .add or op == .sub))
             return .length;
 
-        // length * number -> length, number * length -> length
+        // length * f64 -> length, f64 * length -> length
         if (op == .mul) {
-            if (lhs == .length and rhs == .number) return .length;
-            if (lhs == .number and rhs == .length) return .length;
+            if (lhs == .length and rhs == .f64) return .length;
+            if (lhs == .f64 and rhs == .length) return .length;
         }
 
-        // length / number -> length
-        if (op == .div and lhs == .length and rhs == .number)
+        // length / f64 -> length
+        if (op == .div and lhs == .length and rhs == .f64)
             return .length;
 
-        // length / length -> number (ratio)
+        // length / length -> f64 (ratio)
         if (op == .div and lhs == .length and rhs == .length)
-            return .number;
+            return .f64;
 
         try self.addDiag(.type_mismatch, token);
         return .poison;
@@ -217,7 +222,7 @@ test "analyze: unitless number" {
 
     try std.testing.expect(!sema.hasErrors());
     const sym = sema.symbols.get("a").?;
-    try std.testing.expectEqual(.number, sym.ty);
+    try std.testing.expectEqual(.f64, sym.ty);
 }
 
 test "analyze: percentage literal" {
@@ -248,7 +253,7 @@ test "analyze: multiple bindings" {
     try std.testing.expectEqual(3, sema.symbols.count());
     try std.testing.expectEqual(.length, sema.symbols.get("a").?.ty);
     try std.testing.expectEqual(.percentage, sema.symbols.get("b").?.ty);
-    try std.testing.expectEqual(.number, sema.symbols.get("c").?.ty);
+    try std.testing.expectEqual(.f64, sema.symbols.get("c").?.ty);
 }
 
 test "analyze: identifier reference propagates type" {
@@ -313,7 +318,7 @@ test "analyze: f64 + f64 -> number" {
     defer sem.deinit();
 
     try std.testing.expect(!sem.hasErrors());
-    try std.testing.expectEqual(.number, sem.symbols.get("x").?.ty);
+    try std.testing.expectEqual(.f64, sem.symbols.get("x").?.ty);
 }
 
 test "analyze: length + length -> length" {
@@ -383,7 +388,7 @@ test "analyze: length / length -> number (ratio)" {
     defer sem.deinit();
 
     try std.testing.expect(!sem.hasErrors());
-    try std.testing.expectEqual(.number, sem.symbols.get("x").?.ty);
+    try std.testing.expectEqual(.f64, sem.symbols.get("x").?.ty);
 }
 
 test "analyze: type mismatch length + f64" {
@@ -412,7 +417,7 @@ test "analyze: grouped expression preserves type" {
     defer sem.deinit();
 
     try std.testing.expect(!sem.hasErrors());
-    try std.testing.expectEqual(.number, sem.symbols.get("x").?.ty);
+    try std.testing.expectEqual(.f64, sem.symbols.get("x").?.ty);
 }
 
 test "analyze: reference in arithmetic" {
@@ -426,7 +431,7 @@ test "analyze: reference in arithmetic" {
     defer sem.deinit();
 
     try std.testing.expect(!sem.hasErrors());
-    try std.testing.expectEqual(.number, sem.symbols.get("x").?.ty);
+    try std.testing.expectEqual(.f64, sem.symbols.get("x").?.ty);
 }
 
 test "analyze: poison propagation in arithmetic" {
@@ -443,4 +448,80 @@ test "analyze: poison propagation in arithmetic" {
     try std.testing.expectEqual(1, sem.diagnostics.len);
     try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
     try std.testing.expectEqual(.poison, sem.symbols.get("x").?.ty);
+}
+
+test "analyze: input resolves type" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sema = try analyze(allocator, &tree);
+    defer sema.deinit();
+
+    try std.testing.expect(!sema.hasErrors());
+    const sym = sema.symbols.get("head").?;
+    try std.testing.expectEqual(.length, sym.ty);
+    try std.testing.expectEqual(.input, sym.kind);
+}
+
+test "analyze: input referenced in let" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm let x = head";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sema = try analyze(allocator, &tree);
+    defer sema.deinit();
+
+    try std.testing.expect(!sema.hasErrors());
+    try std.testing.expectEqual(.input, sema.symbols.get("head").?.kind);
+    try std.testing.expectEqual(.let_binding, sema.symbols.get("x").?.kind);
+    try std.testing.expectEqual(.length, sema.symbols.get("x").?.ty);
+}
+
+test "analyze: duplicate input" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm input head = 200mm";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sema = try analyze(allocator, &tree);
+    defer sema.deinit();
+
+    try std.testing.expect(sema.hasErrors());
+    try std.testing.expectEqual(1, sema.diagnostics.len);
+    try std.testing.expectEqual(.duplicate_binding, sema.diagnostics[0].tag);
+}
+
+test "analyze: duplicate name across input and let" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input x = 100mm let x = 200mm";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sema = try analyze(allocator, &tree);
+    defer sema.deinit();
+
+    try std.testing.expect(sema.hasErrors());
+    try std.testing.expectEqual(1, sema.diagnostics.len);
+    try std.testing.expectEqual(.duplicate_binding, sema.diagnostics[0].tag);
+}
+
+test "analyze: let bindings have let_binding kind" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let x = 100mm";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sema = try analyze(allocator, &tree);
+    defer sema.deinit();
+
+    try std.testing.expect(!sema.hasErrors());
+    try std.testing.expectEqual(.let_binding, sema.symbols.get("x").?.kind);
 }

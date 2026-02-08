@@ -16,6 +16,7 @@ pub const Diagnostic = struct {
         expected_identifier,
         expected_equal,
         expected_expression,
+        expected_literal,
         expected_r_paren,
         unexpected_token,
 
@@ -32,6 +33,7 @@ pub const Diagnostic = struct {
                 .expected_identifier => "expected identifier",
                 .expected_equal => "expected '='",
                 .expected_expression => "expected expression",
+                .expected_literal => "expected literal value (e.g. 100mm, 50%, 42)",
                 .expected_r_paren => "expected ')'",
                 .unexpected_token => "unexpected token",
                 .duplicate_binding => "duplicate binding",
@@ -69,6 +71,11 @@ pub const Node = struct {
         /// main_token: `let` token (name = main_token + 1).
         /// lhs: value expression node index. rhs: unused (0).
         let_statement,
+
+        /// `input <name> = <expr>`.
+        /// main_token: `input` token (name = main_token + 1).
+        /// lhs: default value expression node index. rhs: unused (0).
+        input_statement,
 
         // ------------------------------
         // Expressions
