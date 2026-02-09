@@ -72,6 +72,7 @@ let cf_waist = point(0mm, back_length)`;
 
       <!-- Top-right: inputs -->
       <div
+        id="inputs-pane"
         class="flex flex-col min-h-0 min-w-0 border-b border-border overflow-hidden"
       >
         <div
@@ -92,6 +93,37 @@ let cf_waist = point(0mm, back_length)`;
             <span class="text-xs font-mono text-primary-muted-foreground"
               >input</span
             >
+            <button
+              id="toggle-animate"
+              class="cursor-pointer text-primary-muted-foreground/60 hover:text-primary-muted-foreground ml-1 leading-none"
+              title="Play/pause animation"
+              ><svg
+                id="icon-pause"
+                class="size-2"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                xmlns="http://www.w3.org/2000/svg"
+                ><rect x="3" y="2" width="4" height="12" rx="1"></rect><rect
+                  x="9"
+                  y="2"
+                  width="4"
+                  height="12"
+                  rx="1"></rect></svg
+              ><svg
+                id="icon-play"
+                class="size-2 hidden"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                xmlns="http://www.w3.org/2000/svg"
+                ><path
+                  d="M4 2.5a.5.5 0 01.77-.42l9 5.5a.5.5 0 010 .84l-9 5.5A.5.5 0 014 13.5v-11z"
+                ></path></svg
+              ></button
+            ><button
+              id="reset-inputs"
+              class="cursor-pointer text-primary-muted-foreground/60 hover:text-primary-muted-foreground ml-0.5 leading-none"
+              title="Reset inputs"
+            ><svg class="size-2" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 2v5h5M14 14v-5H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.5 6A6 6 0 005 3.5L2 7m12 3l-3 3.5A6 6 0 012.5 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           </div>
           <span
             id="status-eval"
@@ -160,7 +192,19 @@ let cf_waist = point(0mm, back_length)`;
               id="download-svg"
               class="cursor-pointer text-primary-muted-foreground/60 hover:text-primary-muted-foreground ml-1 leading-none"
               title="Download SVG"
-            ><svg class="size-2" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 1v9m0 0L4.5 6.5M8 10l3.5-3.5M2 12.5v1a1 1 0 001 1h10a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+              ><svg
+                class="size-2"
+                viewBox="0 0 16 16"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                ><path
+                  d="M8 1v9m0 0L4.5 6.5M8 10l3.5-3.5M2 12.5v1a1 1 0 001 1h10a1 1 0 001-1v-1"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"></path></svg
+              ></button
+            >
           </div>
           <div class="flex items-center gap-0.5">
             <button
@@ -678,7 +722,8 @@ let cf_waist = point(0mm, back_length)`;
       var clone = svg.cloneNode(true);
       clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
       // Add generator metadata as a comment and hash in filename.
-      var version = "ktr 0.1.0 \u00b7 ktr-ir v1 \u00b7 Zig WASM runtime \u00b7 Release";
+      var version =
+        "ktr 0.1.0 \u00b7 ktr-ir v1 \u00b7 Zig WASM runtime \u00b7 Release";
       var serializer = new XMLSerializer();
       var svgString = serializer.serializeToString(clone);
       svgString = "<!-- " + version + " -->\n" + svgString;
@@ -695,6 +740,159 @@ let cf_waist = point(0mm, back_length)`;
       a.download = "pattern-" + hex + ".svg";
       a.click();
       URL.revokeObjectURL(url);
+    });
+
+    // ── Animation ────────────────────────────────────────────────────────────
+
+    var toggleAnimateBtn = document.getElementById("toggle-animate");
+    var iconPause = document.getElementById("icon-pause");
+    var iconPlay = document.getElementById("icon-play");
+    var inputsPane = document.getElementById("inputs-pane");
+
+    var animating = false;
+    var animationId = null;
+    var userHasEdited = false;
+    var inputsHovered = false;
+    var defaultInputValues = {};
+    var animFrameCount = 0;
+    var animFpsTime = 0;
+
+    function updateAnimateBtn() {
+      if (animating) {
+        iconPause.classList.remove("hidden");
+        iconPlay.classList.add("hidden");
+      } else {
+        iconPause.classList.add("hidden");
+        iconPlay.classList.remove("hidden");
+      }
+    }
+
+    function startAnimation() {
+      animating = true;
+      userHasEdited = false;
+      animFrameCount = 0;
+      animFpsTime = performance.now();
+      updateAnimateBtn();
+      if (!animationId) animationId = requestAnimationFrame(animate);
+    }
+
+    function stopAnimation() {
+      animating = false;
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+      updateAnimateBtn();
+      statusEval.textContent = "";
+    }
+
+    function animate() {
+      animationId = null;
+      if (!animating) return;
+
+      if (inputsHovered || userHasEdited) {
+        // Keep the loop alive but skip work.
+        animationId = requestAnimationFrame(animate);
+        return;
+      }
+
+      if (!lastBindings) {
+        animationId = requestAnimationFrame(animate);
+        return;
+      }
+
+      var t = performance.now() / 2000;
+      var inputs = lastBindings.filter(function (b) {
+        return b.isInput;
+      });
+
+      for (var i = 0; i < inputs.length; i++) {
+        var inp = inputs[i];
+        var def = defaultInputValues[inp.name];
+        if (def === undefined) continue;
+        var rate = 0.8 + i * 0.3;
+        var s = (Math.sin(t * rate) + 1) / 2;
+        var lo = def / 1.4;
+        var hi = def * 1.4;
+        currentOverrides[inp.name] = Math.max(1, lo + s * (hi - lo));
+      }
+
+      // Re-evaluate with animated overrides.
+      if (lastCompiledIr) {
+        var evalResult = evalIr(lastCompiledIr, currentOverrides);
+        if (evalResult && evalResult.ok) {
+          lastBindings = evalResult.bindings;
+          var computed = evalResult.bindings.filter(function (b) {
+            return !b.isInput;
+          });
+          if (outputMode === "visual") {
+            renderVisual(computed);
+          } else {
+            renderTextResults(computed);
+          }
+          // Update input field values without rebuilding DOM.
+          var fields = inputsContent.querySelectorAll("input[data-name]");
+          for (var j = 0; j < fields.length; j++) {
+            var name = fields[j].dataset.name;
+            if (name in currentOverrides) {
+              fields[j].value = Math.round(currentOverrides[name]);
+            }
+          }
+          // Update FPS counter.
+          animFrameCount++;
+          var now = performance.now();
+          if (now - animFpsTime >= 500) {
+            var fps = Math.round(
+              (animFrameCount * 1000) / (now - animFpsTime),
+            );
+            statusEval.textContent = fps + " fps";
+            animFrameCount = 0;
+            animFpsTime = now;
+          }
+        }
+      }
+
+      animationId = requestAnimationFrame(animate);
+    }
+
+    toggleAnimateBtn.addEventListener("click", function () {
+      if (animating) {
+        stopAnimation();
+      } else {
+        // Restart: clear user overrides and re-evaluate from defaults.
+        userHasEdited = false;
+        currentOverrides = {};
+        if (lastCompiledIr) {
+          var evalResult = evalIr(lastCompiledIr, currentOverrides);
+          if (evalResult && evalResult.ok) {
+            showInputs(evalResult.bindings);
+            showResults(evalResult.bindings);
+          }
+        }
+        startAnimation();
+      }
+    });
+
+    var resetInputsBtn = document.getElementById("reset-inputs");
+    resetInputsBtn.addEventListener("click", function () {
+      stopAnimation();
+      userHasEdited = false;
+      currentOverrides = {};
+      if (lastCompiledIr) {
+        var evalResult = evalIr(lastCompiledIr, currentOverrides);
+        if (evalResult && evalResult.ok) {
+          showInputs(evalResult.bindings);
+          showResults(evalResult.bindings);
+        }
+      }
+    });
+
+    // Pause animation while hovering over the input pane.
+    inputsPane.addEventListener("mouseenter", function () {
+      inputsHovered = true;
+    });
+    inputsPane.addEventListener("mouseleave", function () {
+      inputsHovered = false;
     });
 
     // Parse error strings like "4:9:3: error: undefined reference"
@@ -985,6 +1183,11 @@ let cf_waist = point(0mm, back_length)`;
           inputEl.dataset.defaultValue = String(inp.value);
 
           inputEl.addEventListener("input", function () {
+            // User manually edited — stop animation.
+            if (animating) {
+              userHasEdited = true;
+              stopAnimation();
+            }
             var val = parseFloat(inputEl.value);
             if (isNaN(val)) {
               delete currentOverrides[inp.name];
@@ -1106,6 +1309,11 @@ let cf_waist = point(0mm, back_length)`;
         var t1 = performance.now();
         var evalResult = evalIr(result.output, currentOverrides);
         if (evalResult && evalResult.ok) {
+          // Capture default input values for animation.
+          defaultInputValues = {};
+          evalResult.bindings.forEach(function (b) {
+            if (b.isInput) defaultInputValues[b.name] = b.value;
+          });
           showInputs(evalResult.bindings);
           showResults(evalResult.bindings);
           statusEval.textContent =
@@ -1115,6 +1323,9 @@ let cf_waist = point(0mm, back_length)`;
           showError("eval: " + evalResult.error);
           statusEval.textContent = "";
         }
+
+        // Restart animation on recompile (new code = fresh start).
+        startAnimation();
       } else {
         // Keep last valid IR and results visible; just show markers + error bar.
         var markers = parseErrors(result.error);
@@ -1169,6 +1380,10 @@ let cf_waist = point(0mm, back_length)`;
         var t1 = performance.now();
         var evalResult = evalIr(irSource, currentOverrides);
         if (evalResult && evalResult.ok) {
+          defaultInputValues = {};
+          evalResult.bindings.forEach(function (b) {
+            if (b.isInput) defaultInputValues[b.name] = b.value;
+          });
           showInputs(evalResult.bindings);
           showResults(evalResult.bindings);
           statusEval.textContent =
@@ -1216,6 +1431,7 @@ let cf_waist = point(0mm, back_length)`;
         versionEl.textContent =
           "ktr 0.1.0 \u00b7 ktr-ir v1 \u00b7 Zig WASM runtime \u00b7 Release";
         runCompile();
+        startAnimation();
       })
       .catch(function (err) {
         statusDecompile.textContent = "Failed to load WASM";
