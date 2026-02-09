@@ -17,10 +17,26 @@ pub const InputOverride = struct {
     value: f64, // already normalized to mm for lengths
 };
 
+/// A runtime value that can hold either a scalar or a structured type.
+pub const RuntimeValue = union(enum) {
+    /// Scalar value: used for f64, length (in mm), and percentage.
+    scalar: f64,
+    /// 2D point: [x, y] both in mm.
+    point: [2]f64,
+
+    /// Extract the scalar payload. Asserts the value is a scalar.
+    pub fn asScalar(self: RuntimeValue) f64 {
+        return switch (self) {
+            .scalar => |v| v,
+            .point => unreachable,
+        };
+    }
+};
+
 pub const Binding = struct {
     name: []const u8,
     ty: Type,
-    value: f64, // normalized: lengths in mm
+    value: RuntimeValue,
     is_input: bool,
 };
 
@@ -64,15 +80,16 @@ pub fn eval(gpa: Allocator, ir_data: Ir, overrides: []const InputOverride) EvalE
     errdefer arena.deinit();
     const ally = arena.allocator();
 
-    // Working environment: maps binding name -> resolved f64.
-    var env = std.StringHashMapUnmanaged(f64){};
+    // Working environment: maps binding name -> resolved RuntimeValue.
+    var env = std.StringHashMapUnmanaged(RuntimeValue){};
 
     // Collect user-visible bindings (skip compiler temps).
     var bindings = std.ArrayListUnmanaged(Binding){};
 
     // Process inputs first: apply overrides or use defaults.
     for (ir_data.inputs) |input| {
-        const value = findOverride(overrides, input.name) orelse normalizeToMm(input.default);
+        const scalar = findOverride(overrides, input.name) orelse normalizeToMm(input.default);
+        const value = RuntimeValue{ .scalar = scalar };
         try env.put(ally, input.name, value);
         try bindings.append(ally, .{
             .name = try ally.dupe(u8, input.name),
@@ -84,8 +101,8 @@ pub fn eval(gpa: Allocator, ir_data: Ir, overrides: []const InputOverride) EvalE
 
     // Process instructions.
     for (ir_data.instructions) |inst| {
-        const value = switch (inst.rhs) {
-            .constant => |v| normalizeToMm(v),
+        const value: RuntimeValue = switch (inst.rhs) {
+            .constant => |v| .{ .scalar = normalizeToMm(v) },
             .copy => |name| env.get(name) orelse return error.UndefinedReference,
             .builtin => |b| try evalBuiltin(&env, b),
         };
@@ -121,27 +138,38 @@ fn normalizeToMm(v: Value) f64 {
     };
 }
 
-/// Resolve an operand to its f64 value.
-fn resolveOperand(env: *const std.StringHashMapUnmanaged(f64), operand: Operand) EvalError!f64 {
+/// Resolve an operand to its RuntimeValue.
+fn resolveOperand(env: *const std.StringHashMapUnmanaged(RuntimeValue), operand: Operand) EvalError!RuntimeValue {
     return switch (operand) {
         .ref => |name| env.get(name) orelse return error.UndefinedReference,
-        .literal => |v| normalizeToMm(v),
+        .literal => |v| .{ .scalar = normalizeToMm(v) },
     };
 }
 
-/// Evaluate a builtin operation (add, sub, mul, div).
-fn evalBuiltin(env: *const std.StringHashMapUnmanaged(f64), b: Inst.Builtin) EvalError!f64 {
-    const lhs = try resolveOperand(env, b.lhs);
-    const rhs = try resolveOperand(env, b.rhs);
+/// Resolve an operand that must be a scalar (f64/length/percentage).
+fn resolveScalar(env: *const std.StringHashMapUnmanaged(RuntimeValue), operand: Operand) EvalError!f64 {
+    const rv = try resolveOperand(env, operand);
+    return rv.asScalar();
+}
 
+/// Evaluate a builtin operation.
+fn evalBuiltin(env: *const std.StringHashMapUnmanaged(RuntimeValue), b: Inst.Builtin) EvalError!RuntimeValue {
     return switch (b.op) {
-        .add => lhs + rhs,
-        .sub => lhs - rhs,
-        .mul => lhs * rhs,
+        // Arithmetic: scalar x scalar -> scalar
+        .add => .{ .scalar = try resolveScalar(env, b.lhs) + try resolveScalar(env, b.rhs) },
+        .sub => .{ .scalar = try resolveScalar(env, b.lhs) - try resolveScalar(env, b.rhs) },
+        .mul => .{ .scalar = try resolveScalar(env, b.lhs) * try resolveScalar(env, b.rhs) },
         .div => {
+            const lhs = try resolveScalar(env, b.lhs);
+            const rhs = try resolveScalar(env, b.rhs);
             if (rhs == 0.0) return error.DivisionByZero;
-            return lhs / rhs;
+            return .{ .scalar = lhs / rhs };
         },
+        // Constructors
+        .point => .{ .point = .{
+            try resolveScalar(env, b.lhs),
+            try resolveScalar(env, b.rhs),
+        } },
     };
 }
 
@@ -183,7 +211,7 @@ test "eval: constant length" {
     const b = result.bindings[0];
     try std.testing.expectEqualStrings("x", b.name);
     try std.testing.expectEqual(Type.length, b.ty);
-    try std.testing.expectEqual(@as(f64, 100.0), b.value);
+    try std.testing.expectEqual(@as(f64, 100.0), b.value.asScalar());
 }
 
 test "eval: constant percentage" {
@@ -197,7 +225,7 @@ test "eval: constant percentage" {
 
     const b = result.bindings[0];
     try std.testing.expectEqual(Type.percentage, b.ty);
-    try std.testing.expectEqual(@as(f64, 50.0), b.value);
+    try std.testing.expectEqual(@as(f64, 50.0), b.value.asScalar());
 }
 
 test "eval: constant f64" {
@@ -211,7 +239,7 @@ test "eval: constant f64" {
 
     const b = result.bindings[0];
     try std.testing.expectEqual(Type.f64, b.ty);
-    try std.testing.expectEqual(@as(f64, 42.2), b.value);
+    try std.testing.expectEqual(@as(f64, 42.2), b.value.asScalar());
 }
 
 test "eval: unit conversion cm to mm" {
@@ -223,7 +251,7 @@ test "eval: unit conversion cm to mm" {
     );
     defer result.deinit();
 
-    try std.testing.expectEqual(@as(f64, 20.0), result.bindings[0].value);
+    try std.testing.expectEqual(@as(f64, 20.0), result.bindings[0].value.asScalar());
 }
 
 test "eval: copy reference" {
@@ -237,7 +265,7 @@ test "eval: copy reference" {
     defer result.deinit();
 
     try std.testing.expectEqual(2, result.bindings.len);
-    try std.testing.expectEqual(@as(f64, 100.0), result.bindings[1].value);
+    try std.testing.expectEqual(@as(f64, 100.0), result.bindings[1].value.asScalar());
     try std.testing.expectEqualStrings("y", result.bindings[1].name);
 }
 
@@ -253,7 +281,7 @@ test "eval: add two refs" {
     defer result.deinit();
 
     const c = findBinding(result.bindings, "c").?;
-    try std.testing.expectEqual(@as(f64, 30.0), c.value);
+    try std.testing.expectEqual(@as(f64, 30.0), c.value.asScalar());
 }
 
 test "eval: sub two literals" {
@@ -265,7 +293,7 @@ test "eval: sub two literals" {
     );
     defer result.deinit();
 
-    try std.testing.expectEqual(@as(f64, 7.0), result.bindings[0].value);
+    try std.testing.expectEqual(@as(f64, 7.0), result.bindings[0].value.asScalar());
 }
 
 test "eval: mul ref and literal" {
@@ -279,7 +307,7 @@ test "eval: mul ref and literal" {
     defer result.deinit();
 
     const x = findBinding(result.bindings, "x").?;
-    try std.testing.expectEqual(@as(f64, 200.0), x.value);
+    try std.testing.expectEqual(@as(f64, 200.0), x.value.asScalar());
     try std.testing.expectEqual(Type.length, x.ty);
 }
 
@@ -294,7 +322,7 @@ test "eval: div two refs" {
     );
     defer result.deinit();
 
-    try std.testing.expectEqual(@as(f64, 2.5), findBinding(result.bindings, "x").?.value);
+    try std.testing.expectEqual(@as(f64, 2.5), findBinding(result.bindings, "x").?.value.asScalar());
 }
 
 test "eval: mixed-unit add (mm + cm)" {
@@ -307,7 +335,7 @@ test "eval: mixed-unit add (mm + cm)" {
     defer result.deinit();
 
     // 100mm + 2cm = 100 + 20 = 120mm
-    try std.testing.expectEqual(@as(f64, 120.0), result.bindings[0].value);
+    try std.testing.expectEqual(@as(f64, 120.0), result.bindings[0].value.asScalar());
 }
 
 test "eval: division by zero" {
@@ -346,7 +374,7 @@ test "eval: temp bindings excluded from results" {
     try std.testing.expectEqualStrings("a", result.bindings[0].name);
     try std.testing.expectEqualStrings("x", result.bindings[1].name);
     // (2 + 3) * 4 = 20
-    try std.testing.expectEqual(@as(f64, 20.0), result.bindings[1].value);
+    try std.testing.expectEqual(@as(f64, 20.0), result.bindings[1].value.asScalar());
 }
 
 test "eval: full user example" {
@@ -377,25 +405,25 @@ test "eval: full user example" {
 
     const a = findBinding(result.bindings, "a").?;
     try std.testing.expectEqual(Type.length, a.ty);
-    try std.testing.expectEqual(@as(f64, 100.0), a.value);
+    try std.testing.expectEqual(@as(f64, 100.0), a.value.asScalar());
 
     const b = findBinding(result.bindings, "b").?;
     try std.testing.expectEqual(Type.percentage, b.ty);
-    try std.testing.expectEqual(@as(f64, 50.0), b.value);
+    try std.testing.expectEqual(@as(f64, 50.0), b.value.asScalar());
 
     const c = findBinding(result.bindings, "c").?;
     try std.testing.expectEqual(Type.f64, c.ty);
-    try std.testing.expectEqual(@as(f64, 42.2), c.value);
+    try std.testing.expectEqual(@as(f64, 42.2), c.value.asScalar());
 
     const d = findBinding(result.bindings, "d").?;
     try std.testing.expectEqual(Type.length, d.ty);
     // 100 * 42.2 = 4220
-    try std.testing.expectEqual(@as(f64, 4220.0), d.value);
+    try std.testing.expectEqual(@as(f64, 4220.0), d.value.asScalar());
 
     const e = findBinding(result.bindings, "e").?;
     try std.testing.expectEqual(Type.length, e.ty);
     // (100 + 20) * 42.2 = 120 * 42.2 = 5064
-    try std.testing.expectEqual(@as(f64, 5064.0), e.value);
+    try std.testing.expectEqual(@as(f64, 5064.0), e.value.asScalar());
 }
 
 test "eval: input with default value" {
@@ -411,7 +439,7 @@ test "eval: input with default value" {
     const b = result.bindings[0];
     try std.testing.expectEqualStrings("head", b.name);
     try std.testing.expectEqual(Type.length, b.ty);
-    try std.testing.expectEqual(@as(f64, 100.0), b.value);
+    try std.testing.expectEqual(@as(f64, 100.0), b.value.asScalar());
     try std.testing.expect(b.is_input);
 }
 
@@ -429,11 +457,11 @@ test "eval: input referenced in instruction" {
     try std.testing.expectEqual(2, result.bindings.len);
 
     const head = findBinding(result.bindings, "head").?;
-    try std.testing.expectEqual(@as(f64, 100.0), head.value);
+    try std.testing.expectEqual(@as(f64, 100.0), head.value.asScalar());
     try std.testing.expect(head.is_input);
 
     const x = findBinding(result.bindings, "x").?;
-    try std.testing.expectEqual(@as(f64, 200.0), x.value);
+    try std.testing.expectEqual(@as(f64, 200.0), x.value.asScalar());
     try std.testing.expect(!x.is_input);
 }
 
@@ -447,7 +475,7 @@ test "eval: input override replaces default" {
     defer result.deinit();
 
     try std.testing.expectEqual(1, result.bindings.len);
-    try std.testing.expectEqual(@as(f64, 120.0), result.bindings[0].value);
+    try std.testing.expectEqual(@as(f64, 120.0), result.bindings[0].value.asScalar());
     try std.testing.expect(result.bindings[0].is_input);
 }
 
@@ -463,11 +491,11 @@ test "eval: override propagates to downstream instructions" {
     defer result.deinit();
 
     const head = findBinding(result.bindings, "head").?;
-    try std.testing.expectEqual(@as(f64, 150.0), head.value);
+    try std.testing.expectEqual(@as(f64, 150.0), head.value.asScalar());
 
     const x = findBinding(result.bindings, "x").?;
     // 150 * 2 = 300
-    try std.testing.expectEqual(@as(f64, 300.0), x.value);
+    try std.testing.expectEqual(@as(f64, 300.0), x.value.asScalar());
 }
 
 test "eval: unknown override is ignored" {
@@ -480,7 +508,7 @@ test "eval: unknown override is ignored" {
     defer result.deinit();
 
     // Override for unknown name is ignored; default is used.
-    try std.testing.expectEqual(@as(f64, 100.0), result.bindings[0].value);
+    try std.testing.expectEqual(@as(f64, 100.0), result.bindings[0].value.asScalar());
 }
 
 test "eval: multiple inputs with overrides" {
@@ -496,13 +524,13 @@ test "eval: multiple inputs with overrides" {
     defer result.deinit();
 
     const head = findBinding(result.bindings, "head").?;
-    try std.testing.expectEqual(@as(f64, 100.0), head.value); // default
+    try std.testing.expectEqual(@as(f64, 100.0), head.value.asScalar()); // default
 
     const chest = findBinding(result.bindings, "chest").?;
-    try std.testing.expectEqual(@as(f64, 1000.0), chest.value); // overridden
+    try std.testing.expectEqual(@as(f64, 1000.0), chest.value.asScalar()); // overridden
 
     const sum = findBinding(result.bindings, "sum").?;
-    try std.testing.expectEqual(@as(f64, 1100.0), sum.value); // 100 + 1000
+    try std.testing.expectEqual(@as(f64, 1100.0), sum.value.asScalar()); // 100 + 1000
 }
 
 test "eval: let bindings have is_input false" {
@@ -526,6 +554,70 @@ test "eval: input cm unit normalized" {
     );
     defer result.deinit();
 
-    try std.testing.expectEqual(@as(f64, 20.0), result.bindings[0].value);
+    try std.testing.expectEqual(@as(f64, 20.0), result.bindings[0].value.asScalar());
     try std.testing.expect(result.bindings[0].is_input);
+}
+
+test "eval: point constructor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p : point = point 100mm 50mm
+    );
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.bindings.len);
+    const b = result.bindings[0];
+    try std.testing.expectEqualStrings("p", b.name);
+    try std.testing.expectEqual(Type.point, b.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), b.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 50.0), b.value.point[1]);
+}
+
+test "eval: point with ref args" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\%p : point = point %head 0mm
+    );
+    defer result.deinit();
+
+    const p = findBinding(result.bindings, "p").?;
+    try std.testing.expectEqual(Type.point, p.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), p.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 0.0), p.value.point[1]);
+}
+
+test "eval: point with cm normalization" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p : point = point 2cm 3cm
+    );
+    defer result.deinit();
+
+    const b = result.bindings[0];
+    try std.testing.expectEqual(@as(f64, 20.0), b.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 30.0), b.value.point[1]);
+}
+
+test "eval: point copy" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p : point = point 100mm 50mm
+        \\%q : point = %p
+    );
+    defer result.deinit();
+
+    const q = findBinding(result.bindings, "q").?;
+    try std.testing.expectEqual(Type.point, q.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), q.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 50.0), q.value.point[1]);
 }

@@ -39,7 +39,17 @@ fn writeBindingsJson(bindings: []const eval_mod.Binding) error{OutOfMemory}![]u8
         jw.write(@tagName(binding.ty)) catch return error.OutOfMemory;
 
         jw.objectField("value") catch return error.OutOfMemory;
-        writeJsonNumber(&jw, binding.value) catch return error.OutOfMemory;
+        switch (binding.value) {
+            .scalar => |v| writeJsonNumber(&jw, v) catch return error.OutOfMemory,
+            .point => |p| {
+                jw.beginObject() catch return error.OutOfMemory;
+                jw.objectField("x") catch return error.OutOfMemory;
+                writeJsonNumber(&jw, p[0]) catch return error.OutOfMemory;
+                jw.objectField("y") catch return error.OutOfMemory;
+                writeJsonNumber(&jw, p[1]) catch return error.OutOfMemory;
+                jw.endObject() catch return error.OutOfMemory;
+            },
+        }
 
         if (binding.ty == .length) {
             jw.objectField("unit") catch return error.OutOfMemory;

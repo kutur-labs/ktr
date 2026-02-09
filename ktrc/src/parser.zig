@@ -95,6 +95,12 @@ const Parser = struct {
         return lhs;
     }
 
+    fn peekTag(self: *const Parser) lexer.Token.Tag {
+        const next = self.cursor + 1;
+        if (next >= self.tokens.len) return .eof;
+        return self.tokens.items(.tag)[next];
+    }
+
     fn parsePrimaryExpr(self: *Parser) Error!ast.NodeIndex {
         const tag = self.currentTag();
 
@@ -109,6 +115,11 @@ const Parser = struct {
                 .main_token = paren_token,
                 .data = .{ .lhs = inner, .rhs = 0 },
             });
+        }
+
+        // Function call: identifier '(' arg_list ')'
+        if (tag == .identifier and self.peekTag() == .l_paren) {
+            return self.parseFnCall();
         }
 
         const node_tag: ast.Node.Tag = switch (tag) {
@@ -127,6 +138,35 @@ const Parser = struct {
             .tag = node_tag,
             .main_token = token,
             .data = .{ .lhs = 0, .rhs = 0 },
+        });
+    }
+
+    fn parseFnCall(self: *Parser) Error!ast.NodeIndex {
+        const name_token = self.cursor;
+        self.advance(); // consume identifier
+        self.advance(); // consume '('
+
+        const start_extra = self.extra_data.items.len;
+
+        // Parse comma-separated argument list.
+        if (self.currentTag() != .r_paren) {
+            const first_arg = try self.parseExpression();
+            try self.extra_data.append(self.allocator, first_arg);
+
+            while (self.currentTag() == .comma) {
+                self.advance(); // consume ','
+                const arg = try self.parseExpression();
+                try self.extra_data.append(self.allocator, arg);
+            }
+        }
+
+        _ = try self.expect(.r_paren, .expected_r_paren);
+        const end_extra = self.extra_data.items.len;
+
+        return self.addNode(.{
+            .tag = .fn_call,
+            .main_token = name_token,
+            .data = .{ .lhs = @intCast(start_extra), .rhs = @intCast(end_extra) },
         });
     }
 
@@ -207,7 +247,12 @@ const Parser = struct {
             .data = .{ .lhs = 0, .rhs = 0 },
         });
 
-        const start_extra = self.extra_data.items.len;
+        // Collect statement indices separately, then append them to
+        // extra_data at the end. This avoids interleaving with fn_call
+        // arguments that are also written to extra_data during parsing.
+        var stmt_indices = std.ArrayList(u32).empty;
+        defer stmt_indices.deinit(self.allocator);
+
         while (self.currentTag() != .eof) {
             const stmt = self.parseStatement() catch |err| switch (err) {
                 error.ParseFailed => {
@@ -216,8 +261,11 @@ const Parser = struct {
                 },
                 else => |oom| return oom,
             };
-            try self.extra_data.append(self.allocator, stmt);
+            try stmt_indices.append(self.allocator, stmt);
         }
+
+        const start_extra = self.extra_data.items.len;
+        try self.extra_data.appendSlice(self.allocator, stmt_indices.items);
         const end_extra = self.extra_data.items.len;
 
         self.nodes.items(.data)[root_index] = .{
@@ -526,4 +574,87 @@ test "parse: input rejects identifier default" {
 
     try std.testing.expect(tree.hasErrors());
     try std.testing.expectEqual(.expected_literal, tree.diagnostics[0].tag);
+}
+
+test "parse: fn_call point(100mm, 50mm)" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm)";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(1, statements.len);
+
+    const let_node = tree.nodes.get(statements[0]);
+    try std.testing.expectEqual(.let_statement, let_node.tag);
+    try std.testing.expectEqualStrings("p", tree.tokenSlice(let_node.main_token + 1));
+
+    const value_node = tree.nodes.get(let_node.data.lhs);
+    try std.testing.expectEqual(.fn_call, value_node.tag);
+    try std.testing.expectEqualStrings("point", tree.tokenSlice(value_node.main_token));
+
+    const args = tree.callArgs(let_node.data.lhs);
+    try std.testing.expectEqual(2, args.len);
+
+    const arg0 = tree.nodes.get(args[0]);
+    try std.testing.expectEqual(.dimension_literal, arg0.tag);
+    try std.testing.expectEqualStrings("100mm", tree.tokenSlice(arg0.main_token));
+
+    const arg1 = tree.nodes.get(args[1]);
+    try std.testing.expectEqual(.dimension_literal, arg1.tag);
+    try std.testing.expectEqualStrings("50mm", tree.tokenSlice(arg1.main_token));
+}
+
+test "parse: fn_call with expression args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let a = 100mm let p = point(a * 2, a / 3)";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(2, statements.len);
+
+    const let_p = tree.nodes.get(statements[1]);
+    const call_node = tree.nodes.get(let_p.data.lhs);
+    try std.testing.expectEqual(.fn_call, call_node.tag);
+
+    const args = tree.callArgs(let_p.data.lhs);
+    try std.testing.expectEqual(2, args.len);
+
+    // First arg should be a mul expression.
+    try std.testing.expectEqual(.mul, tree.nodes.get(args[0]).tag);
+    // Second arg should be a div expression.
+    try std.testing.expectEqual(.div, tree.nodes.get(args[1]).tag);
+}
+
+test "parse: fn_call zero args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = foo()";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    const let_node = tree.nodes.get(statements[0]);
+    const call_node = tree.nodes.get(let_node.data.lhs);
+    try std.testing.expectEqual(.fn_call, call_node.tag);
+
+    const args = tree.callArgs(let_node.data.lhs);
+    try std.testing.expectEqual(0, args.len);
+}
+
+test "parse: fn_call missing closing paren" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(tree.hasErrors());
+    try std.testing.expectEqual(.expected_r_paren, tree.diagnostics[0].tag);
 }

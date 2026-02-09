@@ -19,6 +19,7 @@ fn mapType(sema_ty: sema.Type) Type {
         .length => .length,
         .percentage => .percentage,
         .f64 => .f64,
+        .point => .point,
         .poison => unreachable,
     };
 }
@@ -67,6 +68,18 @@ const Lowerer = struct {
         };
     }
 
+    /// Emit a builtin instruction with a fresh temp name and return a ref to it.
+    fn emitBuiltin(self: *Lowerer, op: Op, lhs: Operand, rhs: Operand, node_index: ast.NodeIndex) LowerError!Operand {
+        const ty = self.nodeType(node_index);
+        const name = try self.tempName();
+        try self.instructions.append(self.ally, .{
+            .name = name,
+            .ty = ty,
+            .rhs = .{ .builtin = .{ .op = op, .lhs = lhs, .rhs = rhs } },
+        });
+        return .{ .ref = name };
+    }
+
     /// Lower an expression node. For leaf nodes, returns an Operand directly
     /// (no instruction emitted). For binary ops, emits intermediate instructions
     /// with temp names and returns a ref operand to the result.
@@ -85,24 +98,32 @@ const Lowerer = struct {
             .add, .sub, .mul, .div => {
                 const lhs_operand = try self.lowerExpr(node.data.lhs);
                 const rhs_operand = try self.lowerExpr(node.data.rhs);
-
-                const ty = self.nodeType(node_index);
-                const name = try self.tempName();
-
-                try self.instructions.append(self.ally, .{
-                    .name = name,
-                    .ty = ty,
-                    .rhs = .{ .builtin = .{
-                        .op = mapOp(node.tag),
-                        .lhs = lhs_operand,
-                        .rhs = rhs_operand,
-                    } },
-                });
-
-                return .{ .ref = name };
+                return self.emitBuiltin(mapOp(node.tag), lhs_operand, rhs_operand, node_index);
+            },
+            .fn_call => {
+                return try self.lowerFnCall(node_index);
             },
             .root, .let_statement, .input_statement => unreachable,
         };
+    }
+
+    /// Lower a function call expression (e.g. `point(x, y)`).
+    fn lowerFnCall(self: *Lowerer, node_index: ast.NodeIndex) LowerError!Operand {
+        const node = self.tree.nodes.get(node_index);
+        const fn_name = self.tree.tokenSlice(node.main_token);
+        const args = self.tree.callArgs(node_index);
+
+        // Map function name to IR op.
+        const op = if (std.mem.eql(u8, fn_name, "point"))
+            .point
+        else
+            unreachable; // sema guarantees only valid builtins reach lowering
+
+        // For binary constructors (point takes exactly 2 args).
+        std.debug.assert(args.len == 2);
+        const lhs_operand = try self.lowerExpr(args[0]);
+        const rhs_operand = try self.lowerExpr(args[1]);
+        return self.emitBuiltin(op, lhs_operand, rhs_operand, node_index);
     }
 
     /// Lower a let binding. Delegates to `lowerExpr` for all node types,
@@ -514,6 +535,75 @@ test "lower: input with arithmetic in let" {
             try std.testing.expectEqual(Op.mul, b.op);
             try std.testing.expect(b.lhs == .ref);
             try std.testing.expectEqualStrings("head", b.lhs.ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: point(100mm, 50mm)" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "let p = point(100mm, 50mm)");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.instructions.len);
+    const inst = result.instructions[0];
+    try std.testing.expectEqualStrings("p", inst.name);
+    try std.testing.expectEqual(Type.point, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point, b.op);
+            try std.testing.expect(b.lhs == .literal);
+            try std.testing.expectEqual(@as(f64, 100.0), b.lhs.literal.number);
+            try std.testing.expectEqual(LengthUnit.mm, b.lhs.literal.unit.?);
+            try std.testing.expect(b.rhs == .literal);
+            try std.testing.expectEqual(@as(f64, 50.0), b.rhs.literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: point with ref args" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "input head = 100mm let p = point(head, 0mm)");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    const inst = result.instructions[0];
+    try std.testing.expectEqualStrings("p", inst.name);
+    try std.testing.expectEqual(Type.point, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point, b.op);
+            try std.testing.expect(b.lhs == .ref);
+            try std.testing.expectEqualStrings("head", b.lhs.ref);
+            try std.testing.expect(b.rhs == .literal);
+            try std.testing.expectEqual(@as(f64, 0.0), b.rhs.literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: point with expression args" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "let a = 100mm let p = point(a * 2, a / 3)");
+    defer result.deinit();
+
+    // Should produce: %a, %0 (temp for a*2), %1 (temp for a/3), %p (point %0 %1)
+    try std.testing.expectEqual(4, result.instructions.len);
+
+    const inst = result.instructions[3];
+    try std.testing.expectEqualStrings("p", inst.name);
+    try std.testing.expectEqual(Type.point, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point, b.op);
+            try std.testing.expect(b.lhs == .ref);
+            try std.testing.expect(b.rhs == .ref);
         },
         else => return error.TestUnexpectedResult,
     }

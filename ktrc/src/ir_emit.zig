@@ -383,3 +383,99 @@ test "roundtrip: input emit then parse" {
 
     try std.testing.expect(lowered.eql(parsed));
 }
+
+test "emit: point builtin" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const insts = try ally.alloc(ir.Inst, 1);
+    insts[0] = .{
+        .name = try ally.dupe(u8, "p"),
+        .ty = .point,
+        .rhs = .{ .builtin = .{
+            .op = .point,
+            .lhs = ir.Operand{ .literal = .{ .number = 100.0, .unit = .mm } },
+            .rhs = ir.Operand{ .literal = .{ .number = 50.0, .unit = .mm } },
+        } },
+    };
+
+    var ir_data = ir.Ir{ .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try emitToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\# ktr-ir v1
+        \\
+        \\%p : point = point 100mm 50mm
+        \\
+    , output);
+}
+
+test "roundtrip: point emit then parse" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try sema.analyze(allocator, &tree);
+    defer sem.deinit();
+
+    var lowered = try lower.lower(allocator, &tree, &sem);
+    defer lowered.deinit();
+
+    const text = try emitToString(allocator, lowered);
+    defer allocator.free(text);
+
+    var parsed = try ir_parse.parse(allocator, text);
+    defer parsed.deinit();
+
+    try std.testing.expect(lowered.eql(parsed));
+}
+
+test "roundtrip: point with ref args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm let p = point(head, 0mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try sema.analyze(allocator, &tree);
+    defer sem.deinit();
+
+    var lowered = try lower.lower(allocator, &tree, &sem);
+    defer lowered.deinit();
+
+    const text = try emitToString(allocator, lowered);
+    defer allocator.free(text);
+
+    var parsed = try ir_parse.parse(allocator, text);
+    defer parsed.deinit();
+
+    try std.testing.expect(lowered.eql(parsed));
+}
+
+test "roundtrip: point with expression args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm let p = point(head * 2, head / 3)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try sema.analyze(allocator, &tree);
+    defer sem.deinit();
+
+    var lowered = try lower.lower(allocator, &tree, &sem);
+    defer lowered.deinit();
+
+    const text = try emitToString(allocator, lowered);
+    defer allocator.free(text);
+
+    var parsed = try ir_parse.parse(allocator, text);
+    defer parsed.deinit();
+
+    try std.testing.expect(lowered.eql(parsed));
+}

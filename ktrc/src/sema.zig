@@ -10,6 +10,8 @@ pub const Type = enum {
     percentage,
     /// A bare number without a unit.
     f64,
+    /// A 2D coordinate (x: length, y: length).
+    point,
     /// Unresolvable value; suppresses cascading diagnostics.
     poison,
 };
@@ -107,6 +109,7 @@ const Analyzer = struct {
 
                 break :blk try self.resolveArithmeticType(node.tag, lhs_ty, rhs_ty, node.main_token);
             },
+            .fn_call => try self.resolveCallType(node_index),
             // Structurally impossible: the parser only produces expression nodes
             // as values in statements; root, let_statement and input_statement
             // never appear here.
@@ -114,6 +117,46 @@ const Analyzer = struct {
         };
         self.node_types[node_index] = ty;
         return ty;
+    }
+
+    fn resolveCallType(self: *Analyzer, node_index: ast.NodeIndex) std.mem.Allocator.Error!Type {
+        const node = self.tree.nodes.get(node_index);
+        const name = self.tree.tokenSlice(node.main_token);
+        const args = self.tree.callArgs(node_index);
+
+        // Built-in constructor lookup
+        const Sig = struct { params: []const Type, ret: Type };
+        const sig: ?Sig = if (std.mem.eql(u8, name, "point"))
+            .{ .params = &.{ .length, .length }, .ret = .point }
+        else
+            null;
+
+        const s = sig orelse {
+            try self.addDiag(.unknown_function, node.main_token);
+            return .poison;
+        };
+
+        // Check argument count.
+        if (args.len != s.params.len) {
+            try self.addDiag(.wrong_argument_count, node.main_token);
+            return .poison;
+        }
+
+        // Check each argument type.
+        var has_poison = false;
+        for (args, s.params) |arg_idx, expected_ty| {
+            const actual_ty = try self.resolveType(arg_idx);
+            if (actual_ty == .poison) {
+                has_poison = true;
+                continue;
+            }
+            if (actual_ty != expected_ty) {
+                try self.addDiag(.argument_type_mismatch, self.tree.nodes.items(.main_token)[arg_idx]);
+            }
+        }
+
+        if (has_poison) return .poison;
+        return s.ret;
     }
 
     fn resolveArithmeticType(
@@ -524,4 +567,118 @@ test "analyze: let bindings have let_binding kind" {
 
     try std.testing.expect(!sema.hasErrors());
     try std.testing.expectEqual(.let_binding, sema.symbols.get("x").?.kind);
+}
+
+test "analyze: point constructor resolves to point type" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.point, sem.symbols.get("p").?.ty);
+}
+
+test "analyze: point with ref args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm let p = point(head, 0mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.point, sem.symbols.get("p").?.ty);
+}
+
+test "analyze: point with expression args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let a = 100mm let p = point(a * 2, a / 3)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.point, sem.symbols.get("p").?.ty);
+}
+
+test "analyze: point rejects f64 args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(42, 50mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.argument_type_mismatch, sem.diagnostics[0].tag);
+}
+
+test "analyze: point rejects wrong arg count" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.wrong_argument_count, sem.diagnostics[0].tag);
+}
+
+test "analyze: unknown function" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = foo(100mm, 50mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.unknown_function, sem.diagnostics[0].tag);
+}
+
+test "analyze: point poison propagation" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(unknown, 50mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    // Only one error for the undefined ref, poison propagates through point.
+    try std.testing.expectEqual(1, sem.diagnostics.len);
+    try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
+    try std.testing.expectEqual(.poison, sem.symbols.get("p").?.ty);
+}
+
+test "analyze: point in arithmetic is type mismatch" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm) let x = p + 1";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.type_mismatch, sem.diagnostics[0].tag);
 }

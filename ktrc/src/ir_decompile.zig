@@ -20,13 +20,24 @@ fn writeKtrValue(writer: anytype, value: Value, ty: Type) !void {
     }
 }
 
+/// Returns true for ops that reconstruct as `name(lhs, rhs)` constructor syntax
+/// rather than `lhs op rhs` infix syntax.
+fn isConstructorOp(op: Op) bool {
+    return switch (op) {
+        .point => true,
+        .add, .sub, .mul, .div => false,
+    };
+}
+
 /// Map an IR op to a ktr infix operator string.
+/// Only valid for non-constructor ops.
 fn opToInfix(op: Op) []const u8 {
     return switch (op) {
         .add => " + ",
         .sub => " - ",
         .mul => " * ",
         .div => " / ",
+        .point => unreachable, // constructor op, not infix
     };
 }
 
@@ -71,6 +82,7 @@ fn opPrecedence(op: Op) u8 {
     return switch (op) {
         .add, .sub => 1,
         .mul, .div => 2,
+        .point => unreachable, // constructor op, no precedence
     };
 }
 
@@ -113,6 +125,26 @@ const Decompiler = struct {
         if (v.unit) |u| try writer.writeAll(u.toStr());
     }
 
+    /// Write a builtin op inline. Constructor ops use `name(lhs, rhs)` syntax;
+    /// infix ops use `lhs op rhs` syntax.
+    fn writeBuiltinInline(self: *const Decompiler, writer: anytype, b: Inst.Builtin, parent_op: ?Op, is_rhs: bool) @TypeOf(writer).Error!void {
+        if (isConstructorOp(b.op)) {
+            try writer.writeAll(b.op.toStr());
+            try writer.writeByte('(');
+            try self.writeExpr(writer, b.lhs, null, false);
+            try writer.writeAll(", ");
+            try self.writeExpr(writer, b.rhs, null, false);
+            try writer.writeByte(')');
+        } else {
+            const needs_parens = needsParentheses(b.op, parent_op, is_rhs);
+            if (needs_parens) try writer.writeByte('(');
+            try self.writeExpr(writer, b.lhs, b.op, false);
+            try writer.writeAll(opToInfix(b.op));
+            try self.writeExpr(writer, b.rhs, b.op, true);
+            if (needs_parens) try writer.writeByte(')');
+        }
+    }
+
     /// Write an operand in ktr source form, potentially inlining single-use temps.
     fn writeExpr(self: *const Decompiler, writer: anytype, operand: Operand, parent_op: ?Op, is_rhs: bool) !void {
         switch (operand) {
@@ -123,12 +155,7 @@ const Decompiler = struct {
                     if (self.inst_map.get(name)) |temp_inst| {
                         switch (temp_inst.rhs) {
                             .builtin => |b| {
-                                const needs_parens = needsParentheses(b.op, parent_op, is_rhs);
-                                if (needs_parens) try writer.writeByte('(');
-                                try self.writeExpr(writer, b.lhs, b.op, false);
-                                try writer.writeAll(opToInfix(b.op));
-                                try self.writeExpr(writer, b.rhs, b.op, true);
-                                if (needs_parens) try writer.writeByte(')');
+                                try self.writeBuiltinInline(writer, b, parent_op, is_rhs);
                                 return;
                             },
                             .constant => |v| {
@@ -180,11 +207,7 @@ pub fn decompile(allocator: std.mem.Allocator, ir_data: Ir, writer: anytype) !vo
         switch (inst.rhs) {
             .constant => |v| try writeKtrValue(writer, v, inst.ty),
             .copy => |name| try writer.writeAll(name),
-            .builtin => |b| {
-                try dc.writeExpr(writer, b.lhs, b.op, false);
-                try writer.writeAll(opToInfix(b.op));
-                try dc.writeExpr(writer, b.rhs, b.op, true);
-            },
+            .builtin => |b| try dc.writeBuiltinInline(writer, b, null, false),
         }
     }
 
@@ -602,6 +625,211 @@ test "decompile: input before let" {
 test "decompile roundtrip: input" {
     const allocator = std.testing.allocator;
     const source: [:0]const u8 = "input head = 100mm\nlet x = head * 2";
+
+    var tree1 = try parser.parse(allocator, source);
+    defer tree1.deinit();
+
+    var sem1 = try sema.analyze(allocator, &tree1);
+    defer sem1.deinit();
+
+    var ir1 = try lower.lower(allocator, &tree1, &sem1);
+    defer ir1.deinit();
+
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(allocator);
+    try decompile(allocator, ir1, buf.writer(allocator));
+    const ktr_text = try buf.toOwnedSlice(allocator);
+    defer allocator.free(ktr_text);
+
+    const ktr_z = try allocator.dupeZ(u8, ktr_text);
+    defer allocator.free(ktr_z);
+
+    var tree2 = try parser.parse(allocator, ktr_z);
+    defer tree2.deinit();
+
+    var sem2 = try sema.analyze(allocator, &tree2);
+    defer sem2.deinit();
+
+    try std.testing.expect(!sem2.hasErrors());
+
+    var ir2 = try lower.lower(allocator, &tree2, &sem2);
+    defer ir2.deinit();
+
+    try std.testing.expect(ir1.eql(ir2));
+}
+
+test "decompile: point constructor" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const insts = try ally.alloc(Inst, 1);
+    insts[0] = .{
+        .name = try ally.dupe(u8, "p"),
+        .ty = .point,
+        .rhs = .{ .builtin = .{
+            .op = .point,
+            .lhs = .{ .literal = .{ .number = 100.0, .unit = .mm } },
+            .rhs = .{ .literal = .{ .number = 50.0, .unit = .mm } },
+        } },
+    };
+
+    var ir_data = Ir{ .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try decompileToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("let p = point(100mm, 50mm)\n", output);
+}
+
+test "decompile: point with ref args" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const insts = try ally.alloc(Inst, 2);
+    insts[0] = .{
+        .name = try ally.dupe(u8, "x"),
+        .ty = .length,
+        .rhs = .{ .constant = .{ .number = 100.0, .unit = .mm } },
+    };
+    insts[1] = .{
+        .name = try ally.dupe(u8, "p"),
+        .ty = .point,
+        .rhs = .{ .builtin = .{
+            .op = .point,
+            .lhs = .{ .ref = try ally.dupe(u8, "x") },
+            .rhs = .{ .literal = .{ .number = 0.0, .unit = .mm } },
+        } },
+    };
+
+    var ir_data = Ir{ .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try decompileToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("let x = 100mm\nlet p = point(x, 0mm)\n", output);
+}
+
+test "decompile: point inlines single-use temp args" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    // IR for: let p = point(a * 2, 0mm)
+    // %0 : length = mul %a 2
+    // %p : point = point %0 0mm
+    const insts = try ally.alloc(Inst, 3);
+    insts[0] = .{
+        .name = try ally.dupe(u8, "a"),
+        .ty = .length,
+        .rhs = .{ .constant = .{ .number = 100.0, .unit = .mm } },
+    };
+    insts[1] = .{
+        .name = try ally.dupe(u8, "0"),
+        .ty = .length,
+        .rhs = .{ .builtin = .{
+            .op = .mul,
+            .lhs = .{ .ref = try ally.dupe(u8, "a") },
+            .rhs = .{ .literal = .{ .number = 2.0, .unit = null } },
+        } },
+    };
+    insts[2] = .{
+        .name = try ally.dupe(u8, "p"),
+        .ty = .point,
+        .rhs = .{ .builtin = .{
+            .op = .point,
+            .lhs = .{ .ref = try ally.dupe(u8, "0") },
+            .rhs = .{ .literal = .{ .number = 0.0, .unit = .mm } },
+        } },
+    };
+
+    var ir_data = Ir{ .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try decompileToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings("let a = 100mm\nlet p = point(a * 2, 0mm)\n", output);
+}
+
+test "decompile roundtrip: point constructor" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm)";
+
+    var tree1 = try parser.parse(allocator, source);
+    defer tree1.deinit();
+
+    var sem1 = try sema.analyze(allocator, &tree1);
+    defer sem1.deinit();
+
+    var ir1 = try lower.lower(allocator, &tree1, &sem1);
+    defer ir1.deinit();
+
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(allocator);
+    try decompile(allocator, ir1, buf.writer(allocator));
+    const ktr_text = try buf.toOwnedSlice(allocator);
+    defer allocator.free(ktr_text);
+
+    const ktr_z = try allocator.dupeZ(u8, ktr_text);
+    defer allocator.free(ktr_z);
+
+    var tree2 = try parser.parse(allocator, ktr_z);
+    defer tree2.deinit();
+
+    var sem2 = try sema.analyze(allocator, &tree2);
+    defer sem2.deinit();
+
+    try std.testing.expect(!sem2.hasErrors());
+
+    var ir2 = try lower.lower(allocator, &tree2, &sem2);
+    defer ir2.deinit();
+
+    try std.testing.expect(ir1.eql(ir2));
+}
+
+test "decompile roundtrip: point with ref args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm\nlet p = point(head, 0mm)";
+
+    var tree1 = try parser.parse(allocator, source);
+    defer tree1.deinit();
+
+    var sem1 = try sema.analyze(allocator, &tree1);
+    defer sem1.deinit();
+
+    var ir1 = try lower.lower(allocator, &tree1, &sem1);
+    defer ir1.deinit();
+
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(allocator);
+    try decompile(allocator, ir1, buf.writer(allocator));
+    const ktr_text = try buf.toOwnedSlice(allocator);
+    defer allocator.free(ktr_text);
+
+    const ktr_z = try allocator.dupeZ(u8, ktr_text);
+    defer allocator.free(ktr_z);
+
+    var tree2 = try parser.parse(allocator, ktr_z);
+    defer tree2.deinit();
+
+    var sem2 = try sema.analyze(allocator, &tree2);
+    defer sem2.deinit();
+
+    try std.testing.expect(!sem2.hasErrors());
+
+    var ir2 = try lower.lower(allocator, &tree2, &sem2);
+    defer ir2.deinit();
+
+    try std.testing.expect(ir1.eql(ir2));
+}
+
+test "decompile roundtrip: point with expression args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "input head = 100mm\nlet p = point(head * 2, head / 3)";
 
     var tree1 = try parser.parse(allocator, source);
     defer tree1.deinit();

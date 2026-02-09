@@ -52,6 +52,10 @@ pub const Token = struct {
         l_paren,
         /// `)`
         r_paren,
+        /// `,`
+        comma,
+        /// `.`
+        dot,
 
         // ------------------------------
         // Special
@@ -156,6 +160,8 @@ pub const Lexer = struct {
             '/' => .slash,
             '(' => .l_paren,
             ')' => .r_paren,
+            ',' => .comma,
+            '.' => .dot,
             else => null,
         };
         if (single_char_tag) |tag| {
@@ -350,4 +356,43 @@ test "lexer: input as identifier outside keyword context" {
     const ident = lex.next();
     try std.testing.expectEqual(ident.tag, .identifier);
     try std.testing.expectEqualStrings(lex.lexeme(ident), "input_size");
+}
+
+test "lexer: comma token" {
+    var lex = Lexer.init("a, b");
+
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .comma);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: dot token" {
+    var lex = Lexer.init("a.b");
+
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .dot);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: function call syntax" {
+    var lex = Lexer.init("point(100mm, 50mm)");
+
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .l_paren);
+    try std.testing.expectEqual(lex.next().tag, .dimension_literal);
+    try std.testing.expectEqual(lex.next().tag, .comma);
+    try std.testing.expectEqual(lex.next().tag, .dimension_literal);
+    try std.testing.expectEqual(lex.next().tag, .r_paren);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: dot does not interfere with decimal numbers" {
+    var lex = Lexer.init("3.14");
+
+    const num = lex.next();
+    try std.testing.expectEqual(num.tag, .number_literal);
+    try std.testing.expectEqualStrings(lex.lexeme(num), "3.14");
+    try std.testing.expectEqual(lex.next().tag, .eof);
 }

@@ -8,8 +8,11 @@ input ease = 60mm
 let half_chest = (chest + ease) / 2
 let half_waist = (waist + ease) / 2
 let dart = half_chest - half_waist
-let side_dart = dart / 3
-let front_dart = dart * 2 / 3`;
+
+let origin = point(0mm, 0mm)
+let top_right = point(half_chest, 0mm)
+let bottom_right = point(half_waist, dart)
+let bottom_left = point(0mm, dart)`;
 ---
 
 <MainLayout headerBorder>
@@ -322,7 +325,17 @@ let front_dart = dart * 2 / 3`;
         "as",
       ],
       searchKeywords: ["bounds", "initial", "tolerance"],
-      typeKeywords: ["mm", "cm", "f64", "i64", "bool"],
+      typeKeywords: [
+        "mm",
+        "cm",
+        "f64",
+        "i64",
+        "bool",
+        "point",
+        "bezier",
+        "length",
+        "percentage",
+      ],
 
       tokenizer: {
         root: [
@@ -362,7 +375,9 @@ let front_dart = dart * 2 / 3`;
           [/#.*$/, "comment"],
           [/\binput\b/, "keyword"],
           [/%[a-zA-Z_]\w*/, "variable"],
-          [/\b(length|percentage|f64)\b/, "type"],
+          [/%\d+/, "variable"],
+          [/\b(length|percentage|f64|point|bezier|bool)\b/, "type"],
+          [/\b(add|sub|mul|div|point)\b(?=\s)/, "keyword.other"],
           [/\b\d+(\.\d+)?(mm|cm)\b/, "number.unit"],
           [/\b\d+\.\d+\b/, "number.float"],
           [/\b\d+\b/, "number"],
@@ -606,9 +621,19 @@ let front_dart = dart * 2 / 3`;
       return String(rounded);
     }
 
+    function formatValue(binding) {
+      var v = binding.value;
+      // Point values come as {x, y} objects from the runtime.
+      if (v !== null && typeof v === "object" && "x" in v) {
+        return "(" + formatNumber(v.x) + ", " + formatNumber(v.y) + ")";
+      }
+      return formatNumber(v);
+    }
+
     function formatType(binding) {
       if (binding.type === "length") return binding.unit;
       if (binding.type === "percentage") return "%";
+      if (binding.type === "point") return "point";
       return binding.type;
     }
 
@@ -639,7 +664,7 @@ let front_dart = dart * 2 / 3`;
         var tdValue = document.createElement("td");
         tdValue.className =
           "text-foreground tabular-nums select-all text-right w-full";
-        tdValue.textContent = formatNumber(b.value);
+        tdValue.textContent = formatValue(b);
 
         var tdType = document.createElement("td");
         tdType.className =

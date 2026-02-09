@@ -27,6 +27,9 @@ pub const Diagnostic = struct {
         duplicate_binding,
         undefined_reference,
         type_mismatch,
+        unknown_function,
+        wrong_argument_count,
+        argument_type_mismatch,
 
         pub fn message(self: Tag) []const u8 {
             return switch (self) {
@@ -39,6 +42,9 @@ pub const Diagnostic = struct {
                 .duplicate_binding => "duplicate binding",
                 .undefined_reference => "undefined reference",
                 .type_mismatch => "type mismatch in arithmetic expression",
+                .unknown_function => "unknown function",
+                .wrong_argument_count => "wrong number of arguments",
+                .argument_type_mismatch => "argument type mismatch",
             };
         }
     };
@@ -99,6 +105,15 @@ pub const Node = struct {
         div,
 
         // ------------------------------
+        // Calls
+        // ------------------------------
+
+        /// `name(arg, ...)`. main_token: identifier (function name).
+        /// lhs: start index into extra_data. rhs: end index (exclusive).
+        /// extra_data[lhs..rhs] contains NodeIndex values for each argument.
+        fn_call,
+
+        // ------------------------------
         // Grouping
         // ------------------------------
 
@@ -151,6 +166,12 @@ pub const Ast = struct {
     /// Returns the list of statement node indices for a `root` node.
     pub fn rootStatements(self: Ast, root_index: NodeIndex) []const NodeIndex {
         const data = self.nodes.items(.data)[root_index];
+        return self.extra_data[data.lhs..data.rhs];
+    }
+
+    /// Returns the list of argument node indices for a `fn_call` node.
+    pub fn callArgs(self: Ast, call_index: NodeIndex) []const NodeIndex {
+        const data = self.nodes.items(.data)[call_index];
         return self.extra_data[data.lhs..data.rhs];
     }
 

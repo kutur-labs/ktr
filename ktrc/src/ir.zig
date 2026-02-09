@@ -5,6 +5,7 @@ pub const Type = enum(u8) {
     f64,
     length,
     percentage,
+    point,
 
     pub fn toStr(self: Type) []const u8 {
         return @tagName(self);
@@ -62,6 +63,7 @@ pub const Op = enum(u8) {
     sub,
     mul,
     div,
+    point,
 
     pub fn toStr(self: Op) []const u8 {
         return @tagName(self);
@@ -186,7 +188,7 @@ pub fn isTemp(name: []const u8) bool {
 // --- Tests ---
 
 test "type round-trip through string" {
-    inline for (.{ Type.f64, Type.length, Type.percentage }) |ty| {
+    inline for (.{ Type.f64, Type.length, Type.percentage, Type.point }) |ty| {
         try std.testing.expectEqual(ty, Type.fromStr(ty.toStr()).?);
     }
 }
