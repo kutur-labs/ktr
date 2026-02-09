@@ -1,54 +1,116 @@
 ---
 import MainLayout from "../layouts/main-layout.astro";
 
-const defaultCode = `input chest = 960mm
-input waist = 780mm
-input ease = 60mm
+const defaultCode = `input bust = 920mm
+input waist = 720mm
+input back_length = 410mm
+input shoulder = 130mm
+input ease = 40mm
 
-let half_chest = (chest + ease) / 2
-let half_waist = (waist + ease) / 2
-let dart = half_chest - half_waist
+let q_bust = (bust + ease) / 4
+let q_waist = (waist + ease / 2) / 4
+let neck_w = bust / 16 + 2mm
+let neck_drop = neck_w + 8mm
+let armhole_d = bust / 8 + back_length / 8 + 25mm
+let sh_drop = back_length / 16
+let dart_intake = q_bust - q_waist
+let bp_x = q_bust / 2 + 10mm
+let bp_y = armhole_d - sh_drop
+let arm_ease = ease / 8
 
-let origin = point(0mm, 0mm)
-let top_right = point(half_chest, 0mm)
-let bottom_right = point(half_waist, dart)
-let bottom_left = point(0mm, dart)`;
+let cf_neck = point(0mm, neck_drop)
+let neck_a = point(neck_w / 3, neck_drop / 3)
+let neck_b = point(neck_w * 2 / 3, neck_drop / 6)
+let neck_pt = point(neck_w, 0mm)
+let sh_tip = point(neck_w + shoulder, sh_drop)
+let arm_a = point(q_bust + arm_ease, sh_drop + armhole_d / 5)
+let arm_b = point(q_bust + arm_ease * 2, armhole_d / 2)
+let arm_c = point(q_bust + arm_ease, armhole_d * 3 / 4)
+let underarm = point(q_bust, armhole_d)
+let side_waist = point(q_waist, back_length)
+let dart_r = point(bp_x + dart_intake / 2, back_length)
+let bust_pt = point(bp_x, bp_y)
+let dart_l = point(bp_x - dart_intake / 2, back_length)
+let cf_waist = point(0mm, back_length)`;
 ---
 
 <MainLayout headerBorder>
   <main class="flex flex-col" style="height: calc(100dvh - 4rem);">
-    <div class="flex flex-col md:flex-row flex-1 min-h-0">
-      <!-- Left pane: .ktr source editor -->
+    <div
+      class="grid grid-cols-1 md:grid-cols-2 grid-rows-4 md:grid-rows-2 flex-1 min-h-0"
+    >
+      <!-- Top-left: source.ktr editor -->
       <div
-        class="flex-1 flex flex-col min-h-0 min-w-0 md:border-r border-border overflow-hidden"
+        class="flex flex-col min-h-0 min-w-0 border-b md:border-r border-border overflow-hidden"
       >
         <div
-          class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border shrink-0"
+          class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
         >
-          <svg
-            class="size-2 md:size-2.5"
-            viewBox="0 0 1178 1178"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
-              fill="currentColor"
-              class="text-primary"></path>
-          </svg>
-          <span class="text-xs font-mono text-primary-muted-foreground"
-            >source.ktr</span
-          >
+          <div class="flex items-center gap-1.5">
+            <svg
+              class="size-2 md:size-2.5"
+              viewBox="0 0 1178 1178"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
+                fill="currentColor"
+                class="text-primary"></path>
+            </svg>
+            <span class="text-xs font-mono text-primary-muted-foreground"
+              >source.ktr</span
+            >
+          </div>
+          <span
+            id="status-compile"
+            class="text-[10px] font-mono text-primary-muted-foreground/50"
+          ></span>
         </div>
         <div id="editor-input" class="flex-1 min-h-0 overflow-hidden"></div>
       </div>
 
-      <!-- Right pane: .ktrir output + results -->
+      <!-- Top-right: inputs -->
       <div
-        class="flex-1 flex flex-col min-h-0 min-w-0 border-t md:border-t-0 border-border overflow-hidden"
+        class="flex flex-col min-h-0 min-w-0 border-b border-border overflow-hidden"
       >
         <div
-          class="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0"
+          class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
+        >
+          <div class="flex items-center gap-1.5">
+            <svg
+              class="size-2 md:size-2.5"
+              viewBox="0 0 1178 1178"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
+                fill="currentColor"
+                class="text-primary"></path>
+            </svg>
+            <span class="text-xs font-mono text-primary-muted-foreground"
+              >input</span
+            >
+          </div>
+          <span
+            id="status-eval"
+            class="text-[10px] font-mono text-primary-muted-foreground/50"
+          ></span>
+        </div>
+        <div
+          id="inputs-content"
+          class="px-3 py-2 font-mono text-xs flex-1 overflow-auto"
+        >
+        </div>
+      </div>
+
+      <!-- Bottom-left: source.ktrir editor -->
+      <div
+        class="flex flex-col min-h-0 min-w-0 border-b md:border-b-0 md:border-r border-border overflow-hidden"
+      >
+        <div
+          class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
         >
           <div class="flex items-center gap-1.5">
             <svg
@@ -72,43 +134,14 @@ let bottom_left = point(0mm, dart)`;
           ></span>
         </div>
         <div id="editor-output" class="flex-1 min-h-0 overflow-hidden"></div>
+      </div>
 
-        <!-- Inputs panel -->
+      <!-- Bottom-right: output (visual / text) -->
+      <div class="flex flex-col min-h-0 min-w-0 overflow-hidden">
         <div
-          id="inputs-panel"
-          class="hidden border-t border-border shrink-0 overflow-auto"
-          style="max-height: 35%;"
+          class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
         >
-          <div
-            class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border shrink-0"
-          >
-            <svg
-              class="size-2 md:size-2.5"
-              viewBox="0 0 1178 1178"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
-                fill="currentColor"
-                class="text-primary"></path>
-            </svg>
-            <span class="text-xs font-mono text-primary-muted-foreground"
-              >inputs</span
-            >
-          </div>
-          <div id="inputs-content" class="px-3 py-2 font-mono text-xs"></div>
-        </div>
-
-        <!-- Results panel -->
-        <div
-          id="results-panel"
-          class="hidden border-t border-border shrink-0 overflow-auto"
-          style="max-height: 35%;"
-        >
-          <div
-            class="flex items-center gap-1.5 px-3 py-1.5 border-b border-border shrink-0"
-          >
+          <div class="flex items-center gap-1.5">
             <svg
               class="size-2 md:size-2.5"
               viewBox="0 0 1178 1178"
@@ -123,7 +156,31 @@ let bottom_left = point(0mm, dart)`;
             <span class="text-xs font-mono text-primary-muted-foreground"
               >output</span
             >
+            <button
+              id="download-svg"
+              class="cursor-pointer text-primary-muted-foreground/60 hover:text-primary-muted-foreground ml-1 leading-none"
+              title="Download SVG"
+            ><svg class="size-2" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 1v9m0 0L4.5 6.5M8 10l3.5-3.5M2 12.5v1a1 1 0 001 1h10a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
           </div>
+          <div class="flex items-center gap-0.5">
+            <button
+              id="toggle-visual"
+              class="px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary"
+              >visual</button
+            >
+            <button
+              id="toggle-text"
+              class="px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50"
+              >text</button
+            >
+          </div>
+        </div>
+        <div
+          id="visual-output"
+          class="flex-1 min-h-0 overflow-auto flex items-center justify-center"
+        >
+        </div>
+        <div id="text-output" class="hidden flex-1 min-h-0 overflow-auto">
           <div id="results-content" class="px-3 py-2 font-mono text-xs"></div>
         </div>
       </div>
@@ -140,7 +197,7 @@ let bottom_left = point(0mm, dart)`;
       </div>
       <span
         id="version-info"
-        class="text-[10px] font-mono text-primary-muted-foreground/40 shrink-0 whitespace-nowrap"
+        class="text-[10px] font-mono text-primary-muted-foreground/60 shrink-0 whitespace-nowrap"
       ></span>
     </div>
   </main>
@@ -156,6 +213,15 @@ let bottom_left = point(0mm, dart)`;
 <style is:global>
   .monaco-editor .hover-row.status-bar .actions a {
     color: var(--primary) !important;
+  }
+  .svg-point {
+    transition: opacity 0.15s ease;
+  }
+  .svg-point:hover text {
+    fill-opacity: 1;
+  }
+  svg:has(.svg-point:hover) .svg-point:not(:hover) {
+    opacity: 0.35;
   }
 </style>
 
@@ -556,12 +622,17 @@ let bottom_left = point(0mm, dart)`;
 
     // ── Bidirectional compile / decompile wiring ──────────────────────────────
 
-    var statusEl = document.getElementById("status");
+    var statusCompile = document.getElementById("status-compile");
+    var statusDecompile = document.getElementById("status");
+    var statusEval = document.getElementById("status-eval");
     var errorBar = document.getElementById("error-bar");
-    var inputsPanel = document.getElementById("inputs-panel");
     var inputsContent = document.getElementById("inputs-content");
-    var resultsPanel = document.getElementById("results-panel");
     var resultsContent = document.getElementById("results-content");
+    var visualOutput = document.getElementById("visual-output");
+    var textOutput = document.getElementById("text-output");
+    var toggleVisualBtn = document.getElementById("toggle-visual");
+    var toggleTextBtn = document.getElementById("toggle-text");
+    var downloadSvgBtn = document.getElementById("download-svg");
 
     // Guard: prevents programmatic setValue from triggering the other direction.
     var updating = false;
@@ -569,6 +640,62 @@ let bottom_left = point(0mm, dart)`;
     // Current input overrides and last compiled IR for re-evaluation.
     var currentOverrides = {};
     var lastCompiledIr = "";
+
+    // Output mode: "visual" (default) or "text".
+    var outputMode = "visual";
+    var lastBindings = null;
+
+    function setOutputMode(mode) {
+      outputMode = mode;
+      if (mode === "visual") {
+        visualOutput.classList.remove("hidden");
+        textOutput.classList.add("hidden");
+        toggleVisualBtn.className =
+          "px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
+        toggleTextBtn.className =
+          "px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
+      } else {
+        visualOutput.classList.add("hidden");
+        textOutput.classList.remove("hidden");
+        toggleVisualBtn.className =
+          "px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
+        toggleTextBtn.className =
+          "px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
+      }
+      if (lastBindings) showResults(lastBindings);
+    }
+
+    toggleVisualBtn.addEventListener("click", function () {
+      setOutputMode("visual");
+    });
+    toggleTextBtn.addEventListener("click", function () {
+      setOutputMode("text");
+    });
+
+    downloadSvgBtn.addEventListener("click", function () {
+      var svg = visualOutput.querySelector("svg");
+      if (!svg) return;
+      var clone = svg.cloneNode(true);
+      clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      // Add generator metadata as a comment and hash in filename.
+      var version = "ktr 0.1.0 \u00b7 ktr-ir v1 \u00b7 Zig WASM runtime \u00b7 Release";
+      var serializer = new XMLSerializer();
+      var svgString = serializer.serializeToString(clone);
+      svgString = "<!-- " + version + " -->\n" + svgString;
+      // Simple hash from SVG content for the filename.
+      var hash = 0;
+      for (var i = 0; i < svgString.length; i++) {
+        hash = ((hash << 5) - hash + svgString.charCodeAt(i)) | 0;
+      }
+      var hex = (hash >>> 0).toString(16).padStart(8, "0");
+      var blob = new Blob([svgString], { type: "image/svg+xml" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "pattern-" + hex + ".svg";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
 
     // Parse error strings like "4:9:3: error: undefined reference"
     // into Monaco marker objects.
@@ -637,17 +764,118 @@ let bottom_left = point(0mm, dart)`;
       return binding.type;
     }
 
-    function showResults(bindings) {
-      // Filter out input bindings — they're shown in the inputs panel.
-      var computed = bindings.filter(function (b) {
-        return !b.isInput;
+    // ── SVG visual renderer ──────────────────────────────────────────────────
+
+    function renderVisual(computed) {
+      var points = computed.filter(function (b) {
+        return (
+          b.type === "point" &&
+          b.value !== null &&
+          typeof b.value === "object" &&
+          "x" in b.value
+        );
       });
 
-      if (computed.length === 0) {
-        hideResults();
+      visualOutput.innerHTML = "";
+
+      if (points.length === 0) {
+        var msg = document.createElement("span");
+        msg.className = "text-xs font-mono text-primary-muted-foreground/40";
+        msg.textContent = "No points to display";
+        visualOutput.appendChild(msg);
         return;
       }
 
+      // Compute bounding box.
+      var minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+      for (var i = 0; i < points.length; i++) {
+        var p = points[i].value;
+        if (p.x < minX) minX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y > maxY) maxY = p.y;
+      }
+
+      var rangeX = maxX - minX;
+      var rangeY = maxY - minY;
+      if (rangeX === 0 && rangeY === 0) {
+        rangeX = 100;
+        rangeY = 100;
+        minX -= 50;
+        minY -= 50;
+      }
+      var maxRange = Math.max(rangeX, rangeY);
+      var pad = maxRange * 0.15;
+      if (pad < 10) pad = 10;
+
+      var vbX = minX - pad;
+      var vbY = minY - pad;
+      var vbW = rangeX + pad * 2;
+      var vbH = rangeY + pad * 2;
+
+      var svgNS = "http://www.w3.org/2000/svg";
+      var svg = document.createElementNS(svgNS, "svg");
+      svg.setAttribute("viewBox", vbX + " " + vbY + " " + vbW + " " + vbH);
+      svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+      svg.setAttribute("class", "w-full h-full");
+
+      var scale = Math.max(vbW, vbH);
+      var dotR = scale * 0.008;
+      var fontSize = scale * 0.012;
+      var labelOffset = dotR + fontSize * 1.2;
+
+      // Draw dots and labels.
+      for (var i = 0; i < points.length; i++) {
+        var pt = points[i];
+        var cx = pt.value.x;
+        var cy = pt.value.y;
+
+        var g = document.createElementNS(svgNS, "g");
+        g.setAttribute("class", "svg-point");
+        g.style.cursor = "pointer";
+
+        // Invisible hit area for easier hover interaction.
+        var hitArea = document.createElementNS(svgNS, "circle");
+        hitArea.setAttribute("cx", cx);
+        hitArea.setAttribute("cy", cy);
+        hitArea.setAttribute("r", dotR * 6);
+        hitArea.setAttribute("fill", "transparent");
+        g.appendChild(hitArea);
+
+        var circle = document.createElementNS(svgNS, "circle");
+        circle.setAttribute("cx", cx);
+        circle.setAttribute("cy", cy);
+        circle.setAttribute("r", dotR);
+        circle.setAttribute("fill", "currentColor");
+        circle.setAttribute("class", "text-primary");
+        g.appendChild(circle);
+
+        var text = document.createElementNS(svgNS, "text");
+        text.setAttribute("x", cx);
+        text.setAttribute("y", cy - labelOffset);
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("font-size", fontSize);
+        text.setAttribute(
+          "font-family",
+          "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
+        );
+        text.setAttribute("fill", "currentColor");
+        text.setAttribute("class", "text-primary-muted-foreground/70");
+        text.textContent = pt.name;
+        g.appendChild(text);
+
+        svg.appendChild(g);
+      }
+
+      visualOutput.appendChild(svg);
+    }
+
+    // ── Text results table ───────────────────────────────────────────────────
+
+    function renderTextResults(computed) {
       resultsContent.innerHTML = "";
       var table = document.createElement("table");
       table.className = "w-full";
@@ -668,7 +896,7 @@ let bottom_left = point(0mm, dart)`;
 
         var tdType = document.createElement("td");
         tdType.className =
-          "pl-2 text-primary-muted-foreground/40 whitespace-nowrap";
+          "pl-2 text-primary-muted-foreground/60 whitespace-nowrap";
         tdType.textContent = formatType(b);
 
         tr.appendChild(tdName);
@@ -677,13 +905,36 @@ let bottom_left = point(0mm, dart)`;
         table.appendChild(tr);
       }
       resultsContent.appendChild(table);
-      resultsPanel.classList.remove("hidden");
+    }
+
+    // ── Show / hide results ──────────────────────────────────────────────────
+
+    function showResults(bindings) {
+      // Filter out input bindings — they're shown in the inputs panel.
+      var computed = bindings.filter(function (b) {
+        return !b.isInput;
+      });
+      lastBindings = bindings;
+
+      if (computed.length === 0) {
+        hideResults();
+        return;
+      }
+
+      if (outputMode === "visual") {
+        renderVisual(computed);
+      } else {
+        renderTextResults(computed);
+      }
     }
 
     function hideResults() {
-      resultsPanel.classList.add("hidden");
+      visualOutput.innerHTML = "";
       resultsContent.innerHTML = "";
+      lastBindings = null;
     }
+
+    // ── Show / hide inputs ───────────────────────────────────────────────────
 
     function showInputs(bindings) {
       // Extract only the input bindings.
@@ -691,12 +942,12 @@ let bottom_left = point(0mm, dart)`;
         return b.isInput;
       });
 
+      inputsContent.innerHTML = "";
+
       if (inputs.length === 0) {
-        hideInputs();
         return;
       }
 
-      inputsContent.innerHTML = "";
       var table = document.createElement("table");
       table.className = "w-full";
 
@@ -754,7 +1005,7 @@ let bottom_left = point(0mm, dart)`;
           // Unit label
           var tdUnit = document.createElement("td");
           tdUnit.className =
-            "pl-2 text-primary-muted-foreground/40 whitespace-nowrap align-middle";
+            "pl-2 text-primary-muted-foreground/60 whitespace-nowrap align-middle";
           tdUnit.textContent = formatType(inp);
 
           // Reset button
@@ -763,7 +1014,7 @@ let bottom_left = point(0mm, dart)`;
 
           var resetBtn = document.createElement("button");
           resetBtn.className =
-            "text-primary-muted-foreground/30 hover:text-primary-muted-foreground/70 " +
+            "text-primary-muted-foreground/50 hover:text-primary-muted-foreground " +
             "text-[10px] leading-none cursor-pointer invisible";
           resetBtn.textContent = "\u21BA";
           resetBtn.title = "Reset to default";
@@ -795,11 +1046,9 @@ let bottom_left = point(0mm, dart)`;
       }
 
       inputsContent.appendChild(table);
-      inputsPanel.classList.remove("hidden");
     }
 
     function hideInputs() {
-      inputsPanel.classList.add("hidden");
       inputsContent.innerHTML = "";
     }
 
@@ -810,7 +1059,7 @@ let bottom_left = point(0mm, dart)`;
       var evalResult = evalIr(lastCompiledIr, currentOverrides);
       if (evalResult && evalResult.ok) {
         showResults(evalResult.bindings);
-        statusEl.textContent =
+        statusEval.textContent =
           "Evaluated in " + formatMs(performance.now() - t0);
       } else if (evalResult && !evalResult.ok) {
         showError("eval: " + evalResult.error);
@@ -830,7 +1079,8 @@ let bottom_left = point(0mm, dart)`;
         hideInputs();
         hideResults();
         clearMarkers(inputEditor);
-        statusEl.textContent = "";
+        statusCompile.textContent = "";
+        statusEval.textContent = "";
         lastCompiledIr = "";
         currentOverrides = {};
         return;
@@ -838,7 +1088,7 @@ let bottom_left = point(0mm, dart)`;
 
       var t0 = performance.now();
       var result = compileKtr(source);
-      var elapsed = formatMs(performance.now() - t0);
+      var compileElapsed = performance.now() - t0;
 
       if (result.ok) {
         updating = true;
@@ -846,22 +1096,24 @@ let bottom_left = point(0mm, dart)`;
         updating = false;
         hideError();
         clearMarkers(inputEditor);
+        statusCompile.textContent = "Compiled in " + formatMs(compileElapsed);
 
         // Store for re-evaluation and reset overrides on recompile.
         lastCompiledIr = result.output;
         currentOverrides = {};
 
         // Evaluate the IR.
+        var t1 = performance.now();
         var evalResult = evalIr(result.output, currentOverrides);
         if (evalResult && evalResult.ok) {
-          var evalElapsed = formatMs(performance.now() - t0);
           showInputs(evalResult.bindings);
           showResults(evalResult.bindings);
-          statusEl.textContent = "Compiled + evaluated in " + evalElapsed;
+          statusEval.textContent =
+            "Evaluated in " + formatMs(performance.now() - t1);
         } else if (evalResult && !evalResult.ok) {
           hideInputs();
           showError("eval: " + evalResult.error);
-          statusEl.textContent = "Compiled in " + elapsed;
+          statusEval.textContent = "";
         }
       } else {
         // Keep last valid IR and results visible; just show markers + error bar.
@@ -871,7 +1123,7 @@ let bottom_left = point(0mm, dart)`;
           return m.startLineNumber + ":" + m.startColumn + ": " + m.message;
         });
         showError(messages.join("\n") || result.error);
-        statusEl.textContent = "Error in " + elapsed;
+        statusCompile.textContent = "Error in " + formatMs(compileElapsed);
       }
     }
 
@@ -888,7 +1140,8 @@ let bottom_left = point(0mm, dart)`;
         hideInputs();
         hideResults();
         clearMarkers(outputEditor);
-        statusEl.textContent = "";
+        statusDecompile.textContent = "";
+        statusEval.textContent = "";
         lastCompiledIr = "";
         currentOverrides = {};
         return;
@@ -896,7 +1149,7 @@ let bottom_left = point(0mm, dart)`;
 
       var t0 = performance.now();
       var result = decompileIr(irSource);
-      var elapsed = formatMs(performance.now() - t0);
+      var decompileElapsed = performance.now() - t0;
 
       if (result.ok) {
         updating = true;
@@ -905,27 +1158,30 @@ let bottom_left = point(0mm, dart)`;
         hideError();
         clearMarkers(outputEditor);
         clearMarkers(inputEditor);
+        statusDecompile.textContent =
+          "Decompiled in " + formatMs(decompileElapsed);
 
         // Store for re-evaluation and reset overrides on decompile.
         lastCompiledIr = irSource;
         currentOverrides = {};
 
         // Also evaluate the IR.
+        var t1 = performance.now();
         var evalResult = evalIr(irSource, currentOverrides);
         if (evalResult && evalResult.ok) {
           showInputs(evalResult.bindings);
           showResults(evalResult.bindings);
-          statusEl.textContent =
-            "Decompiled + evaluated in " + formatMs(performance.now() - t0);
+          statusEval.textContent =
+            "Evaluated in " + formatMs(performance.now() - t1);
         } else if (evalResult && !evalResult.ok) {
           hideInputs();
           showError("eval: " + evalResult.error);
-          statusEl.textContent = "Decompiled in " + elapsed;
+          statusEval.textContent = "";
         }
       } else {
         // Keep last valid source and results visible; just show error bar.
         showError(result.error);
-        statusEl.textContent = "Error in " + elapsed;
+        statusDecompile.textContent = "Error in " + formatMs(decompileElapsed);
       }
     }
 
@@ -951,18 +1207,18 @@ let bottom_left = point(0mm, dart)`;
 
     var versionEl = document.getElementById("version-info");
 
-    statusEl.textContent = "Loading WASM\u2026";
+    statusDecompile.textContent = "Loading WASM\u2026";
     Promise.all([loadWasm(), loadRuntimeWasm()])
       .then(function (results) {
         wasm = results[0];
         wasmRuntime = results[1];
-        statusEl.textContent = "Ready";
+        statusDecompile.textContent = "";
         versionEl.textContent =
           "ktr 0.1.0 \u00b7 ktr-ir v1 \u00b7 Zig WASM runtime \u00b7 Release";
         runCompile();
       })
       .catch(function (err) {
-        statusEl.textContent = "Failed to load WASM";
+        statusDecompile.textContent = "Failed to load WASM";
         console.error("WASM load error:", err);
       });
   });

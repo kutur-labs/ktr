@@ -60,7 +60,7 @@
     --primary: var(--color-primary-500);
     --primary-foreground: var(--color-primary-50);
     --primary-muted: oklch(from var(--color-primary-600) l calc(c * 0.5) h / 0.15);
-    --primary-muted-foreground: oklch(from var(--color-primary-600) l calc(c * 0.5) h / 0.9);
+    --primary-muted-foreground: oklch(from var(--color-primary-700) l calc(c * 0.6) h / 0.95);
     --border: oklch(from var(--color-primary-600) l c h / 0.15);
 }
 
