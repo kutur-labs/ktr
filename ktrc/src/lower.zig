@@ -14,14 +14,11 @@ const Operand = ir.Operand;
 const Input = ir.Input;
 
 /// Map a sema type to an IR type. Poison must never reach this point.
+/// Derived at comptime via tag names so new non-poison types are mapped
+/// automatically without manual updates.
 fn mapType(sema_ty: sema.Type) Type {
-    return switch (sema_ty) {
-        .length => .length,
-        .percentage => .percentage,
-        .f64 => .f64,
-        .point => .point,
-        .poison => unreachable,
-    };
+    if (sema_ty == .poison) unreachable;
+    return std.meta.stringToEnum(Type, @tagName(sema_ty)).?;
 }
 
 const Lowerer = struct {
@@ -69,13 +66,13 @@ const Lowerer = struct {
     }
 
     /// Emit a builtin instruction with a fresh temp name and return a ref to it.
-    fn emitBuiltin(self: *Lowerer, op: Op, lhs: Operand, rhs: Operand, node_index: ast.NodeIndex) LowerError!Operand {
+    fn emitBuiltin(self: *Lowerer, op: Op, operands: []const Operand, node_index: ast.NodeIndex) LowerError!Operand {
         const ty = self.nodeType(node_index);
         const name = try self.tempName();
         try self.instructions.append(self.ally, .{
             .name = name,
             .ty = ty,
-            .rhs = .{ .builtin = .{ .op = op, .lhs = lhs, .rhs = rhs } },
+            .rhs = .{ .builtin = .{ .op = op, .operands = operands } },
         });
         return .{ .ref = name };
     }
@@ -98,7 +95,8 @@ const Lowerer = struct {
             .add, .sub, .mul, .div => {
                 const lhs_operand = try self.lowerExpr(node.data.lhs);
                 const rhs_operand = try self.lowerExpr(node.data.rhs);
-                return self.emitBuiltin(mapOp(node.tag), lhs_operand, rhs_operand, node_index);
+                const operands = try self.ally.dupe(Operand, &.{ lhs_operand, rhs_operand });
+                return self.emitBuiltin(mapOp(node.tag), operands, node_index);
             },
             .fn_call => {
                 return try self.lowerFnCall(node_index);
@@ -107,23 +105,22 @@ const Lowerer = struct {
         };
     }
 
-    /// Lower a function call expression (e.g. `point(x, y)`).
+    /// Lower a function call expression (e.g. `point(x, y)`, `bezier(p1, p2, p3, p4)`).
     fn lowerFnCall(self: *Lowerer, node_index: ast.NodeIndex) LowerError!Operand {
         const node = self.tree.nodes.get(node_index);
         const fn_name = self.tree.tokenSlice(node.main_token);
         const args = self.tree.callArgs(node_index);
 
-        // Map function name to IR op.
-        const op = if (std.mem.eql(u8, fn_name, "point"))
-            .point
-        else
+        // Look up in the centralized builtin registry.
+        const sig = ir.builtin_sigs.get(fn_name) orelse
             unreachable; // sema guarantees only valid builtins reach lowering
 
-        // For binary constructors (point takes exactly 2 args).
-        std.debug.assert(args.len == 2);
-        const lhs_operand = try self.lowerExpr(args[0]);
-        const rhs_operand = try self.lowerExpr(args[1]);
-        return self.emitBuiltin(op, lhs_operand, rhs_operand, node_index);
+        // Lower each argument to an operand.
+        const operands = try self.ally.alloc(Operand, args.len);
+        for (args, 0..) |arg_idx, i| {
+            operands[i] = try self.lowerExpr(arg_idx);
+        }
+        return self.emitBuiltin(sig.op, operands, node_index);
     }
 
     /// Lower a let binding. Delegates to `lowerExpr` for all node types,
@@ -365,10 +362,10 @@ test "lower: let x = a * 2" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.mul, b.op);
-            try std.testing.expect(b.lhs == .ref);
-            try std.testing.expectEqualStrings("a", b.lhs.ref);
-            try std.testing.expect(b.rhs == .literal);
-            try std.testing.expectEqual(@as(f64, 2.0), b.rhs.literal.number);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("a", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.operands[1].literal.number);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -388,10 +385,10 @@ test "lower: let x = (2 + 2) / 2 flattens to temps" {
     switch (temp.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.add, b.op);
-            try std.testing.expect(b.lhs == .literal);
-            try std.testing.expectEqual(@as(f64, 2.0), b.lhs.literal.number);
-            try std.testing.expect(b.rhs == .literal);
-            try std.testing.expectEqual(@as(f64, 2.0), b.rhs.literal.number);
+            try std.testing.expect(b.operands[0] == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.operands[0].literal.number);
+            try std.testing.expect(b.operands[1] == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.operands[1].literal.number);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -402,10 +399,10 @@ test "lower: let x = (2 + 2) / 2 flattens to temps" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.div, b.op);
-            try std.testing.expect(b.lhs == .ref);
-            try std.testing.expectEqualStrings("0", b.lhs.ref);
-            try std.testing.expect(b.rhs == .literal);
-            try std.testing.expectEqual(@as(f64, 2.0), b.rhs.literal.number);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("0", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.operands[1].literal.number);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -533,8 +530,8 @@ test "lower: input with arithmetic in let" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.mul, b.op);
-            try std.testing.expect(b.lhs == .ref);
-            try std.testing.expectEqualStrings("head", b.lhs.ref);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("head", b.operands[0].ref);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -553,11 +550,12 @@ test "lower: point(100mm, 50mm)" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.point, b.op);
-            try std.testing.expect(b.lhs == .literal);
-            try std.testing.expectEqual(@as(f64, 100.0), b.lhs.literal.number);
-            try std.testing.expectEqual(LengthUnit.mm, b.lhs.literal.unit.?);
-            try std.testing.expect(b.rhs == .literal);
-            try std.testing.expectEqual(@as(f64, 50.0), b.rhs.literal.number);
+            try std.testing.expectEqual(2, b.operands.len);
+            try std.testing.expect(b.operands[0] == .literal);
+            try std.testing.expectEqual(@as(f64, 100.0), b.operands[0].literal.number);
+            try std.testing.expectEqual(LengthUnit.mm, b.operands[0].literal.unit.?);
+            try std.testing.expect(b.operands[1] == .literal);
+            try std.testing.expectEqual(@as(f64, 50.0), b.operands[1].literal.number);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -578,10 +576,10 @@ test "lower: point with ref args" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.point, b.op);
-            try std.testing.expect(b.lhs == .ref);
-            try std.testing.expectEqualStrings("head", b.lhs.ref);
-            try std.testing.expect(b.rhs == .literal);
-            try std.testing.expectEqual(@as(f64, 0.0), b.rhs.literal.number);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("head", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .literal);
+            try std.testing.expectEqual(@as(f64, 0.0), b.operands[1].literal.number);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -602,8 +600,44 @@ test "lower: point with expression args" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.point, b.op);
-            try std.testing.expect(b.lhs == .ref);
-            try std.testing.expect(b.rhs == .ref);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expect(b.operands[1] == .ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: bezier with ref args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let p1 = point(0mm, 0mm)
+        \\let p2 = point(100mm, 0mm)
+        \\let p3 = point(100mm, 100mm)
+        \\let p4 = point(0mm, 100mm)
+        \\let c = bezier(p1, p2, p3, p4)
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    // 4 point instructions + 1 bezier instruction = 5
+    try std.testing.expectEqual(5, result.instructions.len);
+
+    const inst = result.instructions[4];
+    try std.testing.expectEqualStrings("c", inst.name);
+    try std.testing.expectEqual(Type.bezier, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.bezier, b.op);
+            try std.testing.expectEqual(4, b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("p1", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("p2", b.operands[1].ref);
+            try std.testing.expect(b.operands[2] == .ref);
+            try std.testing.expectEqualStrings("p3", b.operands[2].ref);
+            try std.testing.expect(b.operands[3] == .ref);
+            try std.testing.expectEqualStrings("p4", b.operands[3].ref);
         },
         else => return error.TestUnexpectedResult,
     }

@@ -20,24 +20,16 @@ fn writeKtrValue(writer: anytype, value: Value, ty: Type) !void {
     }
 }
 
-/// Returns true for ops that reconstruct as `name(lhs, rhs)` constructor syntax
-/// rather than `lhs op rhs` infix syntax.
-fn isConstructorOp(op: Op) bool {
-    return switch (op) {
-        .point => true,
-        .add, .sub, .mul, .div => false,
-    };
-}
-
 /// Map an IR op to a ktr infix operator string.
 /// Only valid for non-constructor ops.
 fn opToInfix(op: Op) []const u8 {
+    std.debug.assert(!op.isConstructor());
     return switch (op) {
         .add => " + ",
         .sub => " - ",
         .mul => " * ",
         .div => " / ",
-        .point => unreachable, // constructor op, not infix
+        .point, .bezier => unreachable,
     };
 }
 
@@ -52,15 +44,12 @@ fn buildUseCounts(allocator: std.mem.Allocator, instructions: []const Inst) !std
                 entry.value_ptr.* += 1;
             },
             .builtin => |b| {
-                if (b.lhs == .ref) {
-                    const entry = try counts.getOrPut(b.lhs.ref);
-                    if (!entry.found_existing) entry.value_ptr.* = 0;
-                    entry.value_ptr.* += 1;
-                }
-                if (b.rhs == .ref) {
-                    const entry = try counts.getOrPut(b.rhs.ref);
-                    if (!entry.found_existing) entry.value_ptr.* = 0;
-                    entry.value_ptr.* += 1;
+                for (b.operands) |operand| {
+                    if (operand == .ref) {
+                        const entry = try counts.getOrPut(operand.ref);
+                        if (!entry.found_existing) entry.value_ptr.* = 0;
+                        entry.value_ptr.* += 1;
+                    }
                 }
             },
             .constant => {},
@@ -79,10 +68,11 @@ fn buildInstMap(allocator: std.mem.Allocator, instructions: []const Inst) !std.S
 }
 
 fn opPrecedence(op: Op) u8 {
+    std.debug.assert(!op.isConstructor());
     return switch (op) {
         .add, .sub => 1,
         .mul, .div => 2,
-        .point => unreachable, // constructor op, no precedence
+        .point, .bezier => unreachable,
     };
 }
 
@@ -125,22 +115,23 @@ const Decompiler = struct {
         if (v.unit) |u| try writer.writeAll(u.toStr());
     }
 
-    /// Write a builtin op inline. Constructor ops use `name(lhs, rhs)` syntax;
+    /// Write a builtin op inline. Constructor ops use `name(arg, ...)` syntax;
     /// infix ops use `lhs op rhs` syntax.
     fn writeBuiltinInline(self: *const Decompiler, writer: anytype, b: Inst.Builtin, parent_op: ?Op, is_rhs: bool) @TypeOf(writer).Error!void {
-        if (isConstructorOp(b.op)) {
+        if (b.op.isConstructor()) {
             try writer.writeAll(b.op.toStr());
             try writer.writeByte('(');
-            try self.writeExpr(writer, b.lhs, null, false);
-            try writer.writeAll(", ");
-            try self.writeExpr(writer, b.rhs, null, false);
+            for (b.operands, 0..) |operand, i| {
+                if (i > 0) try writer.writeAll(", ");
+                try self.writeExpr(writer, operand, null, false);
+            }
             try writer.writeByte(')');
         } else {
             const needs_parens = needsParentheses(b.op, parent_op, is_rhs);
             if (needs_parens) try writer.writeByte('(');
-            try self.writeExpr(writer, b.lhs, b.op, false);
+            try self.writeExpr(writer, b.operands[0], b.op, false);
             try writer.writeAll(opToInfix(b.op));
-            try self.writeExpr(writer, b.rhs, b.op, true);
+            try self.writeExpr(writer, b.operands[1], b.op, true);
             if (needs_parens) try writer.writeByte(')');
         }
     }
@@ -371,11 +362,11 @@ test "decompile: mixed types" {
     try std.testing.expectEqualStrings(expected, output);
 }
 
-test "decompile roundtrip: source -> lower -> decompile -> re-lower -> compare" {
+/// Source -> lower -> decompile -> re-parse -> sema -> re-lower, then assert
+/// the two Ir representations are structurally identical.
+fn expectDecompileRoundtrip(source: [:0]const u8) !void {
     const allocator = std.testing.allocator;
-    const source: [:0]const u8 = "let a = 100mm\nlet b = 50%\nlet c = 42\nlet d = a";
 
-    // First pass: parse -> sema -> lower.
     var tree1 = try parser.parse(allocator, source);
     defer tree1.deinit();
 
@@ -385,14 +376,12 @@ test "decompile roundtrip: source -> lower -> decompile -> re-lower -> compare" 
     var ir1 = try lower.lower(allocator, &tree1, &sem1);
     defer ir1.deinit();
 
-    // Decompile back to .ktr source.
     var buf: std.ArrayListUnmanaged(u8) = .{};
     defer buf.deinit(allocator);
     try decompile(allocator, ir1, buf.writer(allocator));
     const ktr_text = try buf.toOwnedSlice(allocator);
     defer allocator.free(ktr_text);
 
-    // Second pass: re-parse the decompiled source -> sema -> lower.
     const ktr_z = try allocator.dupeZ(u8, ktr_text);
     defer allocator.free(ktr_z);
 
@@ -407,8 +396,11 @@ test "decompile roundtrip: source -> lower -> decompile -> re-lower -> compare" 
     var ir2 = try lower.lower(allocator, &tree2, &sem2);
     defer ir2.deinit();
 
-    // The two Ir representations should be structurally identical.
     try std.testing.expect(ir1.eql(ir2));
+}
+
+test "decompile roundtrip: source -> lower -> decompile -> re-lower -> compare" {
+    try expectDecompileRoundtrip("let a = 100mm\nlet b = 50%\nlet c = 42\nlet d = a");
 }
 
 test "decompile: simple arithmetic" {
@@ -427,8 +419,10 @@ test "decompile: simple arithmetic" {
         .ty = .length,
         .rhs = .{ .builtin = .{
             .op = .mul,
-            .lhs = .{ .ref = try ally.dupe(u8, "a") },
-            .rhs = .{ .literal = .{ .number = 2.0, .unit = null } },
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .ref = try ally.dupe(u8, "a") },
+                Operand{ .literal = .{ .number = 2.0, .unit = null } },
+            }),
         } },
     };
 
@@ -455,8 +449,10 @@ test "decompile: inlines single-use temps" {
         .ty = .f64,
         .rhs = .{ .builtin = .{
             .op = .add,
-            .lhs = .{ .literal = .{ .number = 2.0, .unit = null } },
-            .rhs = .{ .literal = .{ .number = 2.0, .unit = null } },
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .literal = .{ .number = 2.0, .unit = null } },
+                Operand{ .literal = .{ .number = 2.0, .unit = null } },
+            }),
         } },
     };
     insts[1] = .{
@@ -464,8 +460,10 @@ test "decompile: inlines single-use temps" {
         .ty = .f64,
         .rhs = .{ .builtin = .{
             .op = .div,
-            .lhs = .{ .ref = try ally.dupe(u8, "0") },
-            .rhs = .{ .literal = .{ .number = 2.0, .unit = null } },
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .ref = try ally.dupe(u8, "0") },
+                Operand{ .literal = .{ .number = 2.0, .unit = null } },
+            }),
         } },
     };
 
@@ -480,76 +478,12 @@ test "decompile: inlines single-use temps" {
     try std.testing.expectEqualStrings("let x = (2 + 2) / 2\n", output);
 }
 
-test "decompile roundtrip: arithmetic source -> lower -> decompile -> re-lower" {
-    const allocator = std.testing.allocator;
-    const source: [:0]const u8 = "let a = 100mm\nlet x = a * 2";
-
-    var tree1 = try parser.parse(allocator, source);
-    defer tree1.deinit();
-
-    var sem1 = try sema.analyze(allocator, &tree1);
-    defer sem1.deinit();
-
-    var ir1 = try lower.lower(allocator, &tree1, &sem1);
-    defer ir1.deinit();
-
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(allocator);
-    try decompile(allocator, ir1, buf.writer(allocator));
-    const ktr_text = try buf.toOwnedSlice(allocator);
-    defer allocator.free(ktr_text);
-
-    const ktr_z = try allocator.dupeZ(u8, ktr_text);
-    defer allocator.free(ktr_z);
-
-    var tree2 = try parser.parse(allocator, ktr_z);
-    defer tree2.deinit();
-
-    var sem2 = try sema.analyze(allocator, &tree2);
-    defer sem2.deinit();
-
-    try std.testing.expect(!sem2.hasErrors());
-
-    var ir2 = try lower.lower(allocator, &tree2, &sem2);
-    defer ir2.deinit();
-
-    try std.testing.expect(ir1.eql(ir2));
+test "decompile roundtrip: arithmetic" {
+    try expectDecompileRoundtrip("let a = 100mm\nlet x = a * 2");
 }
 
 test "decompile roundtrip: grouped expression" {
-    const allocator = std.testing.allocator;
-    const source: [:0]const u8 = "let x = (2 + 2) / 2";
-
-    var tree1 = try parser.parse(allocator, source);
-    defer tree1.deinit();
-
-    var sem1 = try sema.analyze(allocator, &tree1);
-    defer sem1.deinit();
-
-    var ir1 = try lower.lower(allocator, &tree1, &sem1);
-    defer ir1.deinit();
-
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(allocator);
-    try decompile(allocator, ir1, buf.writer(allocator));
-    const ktr_text = try buf.toOwnedSlice(allocator);
-    defer allocator.free(ktr_text);
-
-    const ktr_z = try allocator.dupeZ(u8, ktr_text);
-    defer allocator.free(ktr_z);
-
-    var tree2 = try parser.parse(allocator, ktr_z);
-    defer tree2.deinit();
-
-    var sem2 = try sema.analyze(allocator, &tree2);
-    defer sem2.deinit();
-
-    try std.testing.expect(!sem2.hasErrors());
-
-    var ir2 = try lower.lower(allocator, &tree2, &sem2);
-    defer ir2.deinit();
-
-    try std.testing.expect(ir1.eql(ir2));
+    try expectDecompileRoundtrip("let x = (2 + 2) / 2");
 }
 
 test "decompile: input declaration" {
@@ -623,39 +557,7 @@ test "decompile: input before let" {
 }
 
 test "decompile roundtrip: input" {
-    const allocator = std.testing.allocator;
-    const source: [:0]const u8 = "input head = 100mm\nlet x = head * 2";
-
-    var tree1 = try parser.parse(allocator, source);
-    defer tree1.deinit();
-
-    var sem1 = try sema.analyze(allocator, &tree1);
-    defer sem1.deinit();
-
-    var ir1 = try lower.lower(allocator, &tree1, &sem1);
-    defer ir1.deinit();
-
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(allocator);
-    try decompile(allocator, ir1, buf.writer(allocator));
-    const ktr_text = try buf.toOwnedSlice(allocator);
-    defer allocator.free(ktr_text);
-
-    const ktr_z = try allocator.dupeZ(u8, ktr_text);
-    defer allocator.free(ktr_z);
-
-    var tree2 = try parser.parse(allocator, ktr_z);
-    defer tree2.deinit();
-
-    var sem2 = try sema.analyze(allocator, &tree2);
-    defer sem2.deinit();
-
-    try std.testing.expect(!sem2.hasErrors());
-
-    var ir2 = try lower.lower(allocator, &tree2, &sem2);
-    defer ir2.deinit();
-
-    try std.testing.expect(ir1.eql(ir2));
+    try expectDecompileRoundtrip("input head = 100mm\nlet x = head * 2");
 }
 
 test "decompile: point constructor" {
@@ -669,8 +571,10 @@ test "decompile: point constructor" {
         .ty = .point,
         .rhs = .{ .builtin = .{
             .op = .point,
-            .lhs = .{ .literal = .{ .number = 100.0, .unit = .mm } },
-            .rhs = .{ .literal = .{ .number = 50.0, .unit = .mm } },
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .literal = .{ .number = 100.0, .unit = .mm } },
+                Operand{ .literal = .{ .number = 50.0, .unit = .mm } },
+            }),
         } },
     };
 
@@ -699,8 +603,10 @@ test "decompile: point with ref args" {
         .ty = .point,
         .rhs = .{ .builtin = .{
             .op = .point,
-            .lhs = .{ .ref = try ally.dupe(u8, "x") },
-            .rhs = .{ .literal = .{ .number = 0.0, .unit = .mm } },
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .ref = try ally.dupe(u8, "x") },
+                Operand{ .literal = .{ .number = 0.0, .unit = .mm } },
+            }),
         } },
     };
 
@@ -732,8 +638,10 @@ test "decompile: point inlines single-use temp args" {
         .ty = .length,
         .rhs = .{ .builtin = .{
             .op = .mul,
-            .lhs = .{ .ref = try ally.dupe(u8, "a") },
-            .rhs = .{ .literal = .{ .number = 2.0, .unit = null } },
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .ref = try ally.dupe(u8, "a") },
+                Operand{ .literal = .{ .number = 2.0, .unit = null } },
+            }),
         } },
     };
     insts[2] = .{
@@ -741,8 +649,10 @@ test "decompile: point inlines single-use temp args" {
         .ty = .point,
         .rhs = .{ .builtin = .{
             .op = .point,
-            .lhs = .{ .ref = try ally.dupe(u8, "0") },
-            .rhs = .{ .literal = .{ .number = 0.0, .unit = .mm } },
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .ref = try ally.dupe(u8, "0") },
+                Operand{ .literal = .{ .number = 0.0, .unit = .mm } },
+            }),
         } },
     };
 
@@ -756,109 +666,23 @@ test "decompile: point inlines single-use temp args" {
 }
 
 test "decompile roundtrip: point constructor" {
-    const allocator = std.testing.allocator;
-    const source: [:0]const u8 = "let p = point(100mm, 50mm)";
-
-    var tree1 = try parser.parse(allocator, source);
-    defer tree1.deinit();
-
-    var sem1 = try sema.analyze(allocator, &tree1);
-    defer sem1.deinit();
-
-    var ir1 = try lower.lower(allocator, &tree1, &sem1);
-    defer ir1.deinit();
-
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(allocator);
-    try decompile(allocator, ir1, buf.writer(allocator));
-    const ktr_text = try buf.toOwnedSlice(allocator);
-    defer allocator.free(ktr_text);
-
-    const ktr_z = try allocator.dupeZ(u8, ktr_text);
-    defer allocator.free(ktr_z);
-
-    var tree2 = try parser.parse(allocator, ktr_z);
-    defer tree2.deinit();
-
-    var sem2 = try sema.analyze(allocator, &tree2);
-    defer sem2.deinit();
-
-    try std.testing.expect(!sem2.hasErrors());
-
-    var ir2 = try lower.lower(allocator, &tree2, &sem2);
-    defer ir2.deinit();
-
-    try std.testing.expect(ir1.eql(ir2));
+    try expectDecompileRoundtrip("let p = point(100mm, 50mm)");
 }
 
 test "decompile roundtrip: point with ref args" {
-    const allocator = std.testing.allocator;
-    const source: [:0]const u8 = "input head = 100mm\nlet p = point(head, 0mm)";
-
-    var tree1 = try parser.parse(allocator, source);
-    defer tree1.deinit();
-
-    var sem1 = try sema.analyze(allocator, &tree1);
-    defer sem1.deinit();
-
-    var ir1 = try lower.lower(allocator, &tree1, &sem1);
-    defer ir1.deinit();
-
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(allocator);
-    try decompile(allocator, ir1, buf.writer(allocator));
-    const ktr_text = try buf.toOwnedSlice(allocator);
-    defer allocator.free(ktr_text);
-
-    const ktr_z = try allocator.dupeZ(u8, ktr_text);
-    defer allocator.free(ktr_z);
-
-    var tree2 = try parser.parse(allocator, ktr_z);
-    defer tree2.deinit();
-
-    var sem2 = try sema.analyze(allocator, &tree2);
-    defer sem2.deinit();
-
-    try std.testing.expect(!sem2.hasErrors());
-
-    var ir2 = try lower.lower(allocator, &tree2, &sem2);
-    defer ir2.deinit();
-
-    try std.testing.expect(ir1.eql(ir2));
+    try expectDecompileRoundtrip("input head = 100mm\nlet p = point(head, 0mm)");
 }
 
 test "decompile roundtrip: point with expression args" {
-    const allocator = std.testing.allocator;
-    const source: [:0]const u8 = "input head = 100mm\nlet p = point(head * 2, head / 3)";
+    try expectDecompileRoundtrip("input head = 100mm\nlet p = point(head * 2, head / 3)");
+}
 
-    var tree1 = try parser.parse(allocator, source);
-    defer tree1.deinit();
-
-    var sem1 = try sema.analyze(allocator, &tree1);
-    defer sem1.deinit();
-
-    var ir1 = try lower.lower(allocator, &tree1, &sem1);
-    defer ir1.deinit();
-
-    var buf: std.ArrayListUnmanaged(u8) = .{};
-    defer buf.deinit(allocator);
-    try decompile(allocator, ir1, buf.writer(allocator));
-    const ktr_text = try buf.toOwnedSlice(allocator);
-    defer allocator.free(ktr_text);
-
-    const ktr_z = try allocator.dupeZ(u8, ktr_text);
-    defer allocator.free(ktr_z);
-
-    var tree2 = try parser.parse(allocator, ktr_z);
-    defer tree2.deinit();
-
-    var sem2 = try sema.analyze(allocator, &tree2);
-    defer sem2.deinit();
-
-    try std.testing.expect(!sem2.hasErrors());
-
-    var ir2 = try lower.lower(allocator, &tree2, &sem2);
-    defer ir2.deinit();
-
-    try std.testing.expect(ir1.eql(ir2));
+test "decompile roundtrip: bezier constructor" {
+    try expectDecompileRoundtrip(
+        \\let p1 = point(0mm, 0mm)
+        \\let p2 = point(100mm, 0mm)
+        \\let p3 = point(100mm, 100mm)
+        \\let p4 = point(0mm, 100mm)
+        \\let c = bezier(p1, p2, p3, p4)
+    );
 }

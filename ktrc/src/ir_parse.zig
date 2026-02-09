@@ -42,38 +42,21 @@ fn parseOperand(ally: std.mem.Allocator, token: []const u8) Error!Operand {
     return .{ .literal = Value.parse(token) catch return error.InvalidFormat };
 }
 
-/// Try to parse a builtin RHS: `op operand operand` (e.g., `mul %a 2`).
+/// Try to parse a builtin RHS: `op operand { operand }` (e.g., `mul %a 2`, `bezier %p1 %p2 %p3 %p4`).
 /// Returns null if the first token is not a known op keyword.
 fn parseBuiltinRhs(ally: std.mem.Allocator, text: []const u8) Error!?Inst.Rhs {
-    // Find the first space to extract the op keyword.
     const first_space = std.mem.indexOfScalar(u8, text, ' ') orelse return null;
-    const op_str = text[0..first_space];
-    const op = Op.fromStr(op_str) orelse return null;
+    const op = Op.fromStr(text[0..first_space]) orelse return null;
 
-    // Parse the two operands after the op keyword.
-    const rest = skipWs(text[first_space + 1 ..]);
-
-    // Find the boundary between the two operands. Operands are separated by
-    // whitespace. The first operand is either a `%name` or a literal.
-    const operand_split = findOperandBoundary(rest) orelse return error.InvalidFormat;
-    const lhs_text = std.mem.trimRight(u8, rest[0..operand_split], " \t");
-    const rhs_text = skipWs(rest[operand_split..]);
-
-    if (lhs_text.len == 0 or rhs_text.len == 0) return error.InvalidFormat;
-
-    const lhs = try parseOperand(ally, lhs_text);
-    const rhs = try parseOperand(ally, rhs_text);
-
-    return .{ .builtin = .{ .op = op, .lhs = lhs, .rhs = rhs } };
-}
-
-/// Find the boundary index between two operands in a string like `%a 2` or `100mm %b`.
-/// Returns the index of the first whitespace character separating them.
-fn findOperandBoundary(text: []const u8) ?usize {
-    for (text, 0..) |c, i| {
-        if (std.ascii.isWhitespace(c)) return i;
+    var operands = std.ArrayListUnmanaged(Operand){};
+    var tokens = std.mem.tokenizeScalar(u8, text[first_space + 1 ..], ' ');
+    while (tokens.next()) |token| {
+        try operands.append(ally, try parseOperand(ally, token));
     }
-    return null;
+
+    if (operands.items.len == 0) return error.InvalidFormat;
+
+    return .{ .builtin = .{ .op = op, .operands = try operands.toOwnedSlice(ally) } };
 }
 
 /// Parsed left-hand side of a declaration: `%name : type = rhs_text`.
@@ -319,10 +302,10 @@ test "parse: builtin op with ref and literal" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.mul, b.op);
-            try std.testing.expect(b.lhs == .ref);
-            try std.testing.expectEqualStrings("a", b.lhs.ref);
-            try std.testing.expect(b.rhs == .literal);
-            try std.testing.expectEqual(@as(f64, 2.0), b.rhs.literal.number);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("a", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.operands[1].literal.number);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -347,10 +330,10 @@ test "parse: builtin op with two refs" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.add, b.op);
-            try std.testing.expect(b.lhs == .ref);
-            try std.testing.expectEqualStrings("a", b.lhs.ref);
-            try std.testing.expect(b.rhs == .ref);
-            try std.testing.expectEqualStrings("b", b.rhs.ref);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("a", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("b", b.operands[1].ref);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -373,10 +356,10 @@ test "parse: builtin op with two literals" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.add, b.op);
-            try std.testing.expect(b.lhs == .literal);
-            try std.testing.expectEqual(@as(f64, 2.0), b.lhs.literal.number);
-            try std.testing.expect(b.rhs == .literal);
-            try std.testing.expectEqual(@as(f64, 3.0), b.rhs.literal.number);
+            try std.testing.expect(b.operands[0] == .literal);
+            try std.testing.expectEqual(@as(f64, 2.0), b.operands[0].literal.number);
+            try std.testing.expect(b.operands[1] == .literal);
+            try std.testing.expectEqual(@as(f64, 3.0), b.operands[1].literal.number);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -399,11 +382,11 @@ test "parse: builtin op with dimension literals" {
     switch (inst.rhs) {
         .builtin => |b| {
             try std.testing.expectEqual(Op.add, b.op);
-            try std.testing.expect(b.lhs == .literal);
-            try std.testing.expectEqual(@as(f64, 100.0), b.lhs.literal.number);
-            try std.testing.expectEqual(LengthUnit.mm, b.lhs.literal.unit.?);
-            try std.testing.expect(b.rhs == .literal);
-            try std.testing.expectEqual(@as(f64, 200.0), b.rhs.literal.number);
+            try std.testing.expect(b.operands[0] == .literal);
+            try std.testing.expectEqual(@as(f64, 100.0), b.operands[0].literal.number);
+            try std.testing.expectEqual(LengthUnit.mm, b.operands[0].literal.unit.?);
+            try std.testing.expect(b.operands[1] == .literal);
+            try std.testing.expectEqual(@as(f64, 200.0), b.operands[1].literal.number);
         },
         else => return error.TestUnexpectedResult,
     }
@@ -465,4 +448,42 @@ test "parse: multiple inputs" {
     try std.testing.expectEqual(2, result.inputs.len);
     try std.testing.expectEqualStrings("head", result.inputs[0].name);
     try std.testing.expectEqualStrings("chest", result.inputs[1].name);
+}
+
+test "parse: bezier instruction with 4 operands" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\%p1 : point = point 0mm 0mm
+        \\%p2 : point = point 100mm 0mm
+        \\%p3 : point = point 100mm 100mm
+        \\%p4 : point = point 0mm 100mm
+        \\%c : bezier = bezier %p1 %p2 %p3 %p4
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(5, result.instructions.len);
+
+    const inst = result.instructions[4];
+    try std.testing.expectEqualStrings("c", inst.name);
+    try std.testing.expectEqual(Type.bezier, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.bezier, b.op);
+            try std.testing.expectEqual(4, b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("p1", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("p2", b.operands[1].ref);
+            try std.testing.expect(b.operands[2] == .ref);
+            try std.testing.expectEqualStrings("p3", b.operands[2].ref);
+            try std.testing.expect(b.operands[3] == .ref);
+            try std.testing.expectEqualStrings("p4", b.operands[3].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }

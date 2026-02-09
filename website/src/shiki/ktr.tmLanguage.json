@@ -59,7 +59,7 @@
       "patterns": [
         {
           "name": "storage.type.primitive.ktr",
-          "match": "\\b(mm|cm|f64|i64|bool)\\b"
+          "match": "\\b(mm|cm|f64|i64|bool|point|bezier|length|percentage)\\b"
         },
         {
           "name": "storage.type.ktr",

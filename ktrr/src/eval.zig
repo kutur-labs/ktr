@@ -23,12 +23,22 @@ pub const RuntimeValue = union(enum) {
     scalar: f64,
     /// 2D point: [x, y] both in mm.
     point: [2]f64,
+    /// Cubic Bezier curve: 4 control points, each [x, y] in mm.
+    bezier: [4][2]f64,
 
     /// Extract the scalar payload. Asserts the value is a scalar.
     pub fn asScalar(self: RuntimeValue) f64 {
         return switch (self) {
             .scalar => |v| v,
-            .point => unreachable,
+            .point, .bezier => unreachable,
+        };
+    }
+
+    /// Extract the point payload. Asserts the value is a point.
+    pub fn asPoint(self: RuntimeValue) [2]f64 {
+        return switch (self) {
+            .point => |p| p,
+            .scalar, .bezier => unreachable,
         };
     }
 };
@@ -156,19 +166,25 @@ fn resolveScalar(env: *const std.StringHashMapUnmanaged(RuntimeValue), operand: 
 fn evalBuiltin(env: *const std.StringHashMapUnmanaged(RuntimeValue), b: Inst.Builtin) EvalError!RuntimeValue {
     return switch (b.op) {
         // Arithmetic: scalar x scalar -> scalar
-        .add => .{ .scalar = try resolveScalar(env, b.lhs) + try resolveScalar(env, b.rhs) },
-        .sub => .{ .scalar = try resolveScalar(env, b.lhs) - try resolveScalar(env, b.rhs) },
-        .mul => .{ .scalar = try resolveScalar(env, b.lhs) * try resolveScalar(env, b.rhs) },
+        .add => .{ .scalar = try resolveScalar(env, b.operands[0]) + try resolveScalar(env, b.operands[1]) },
+        .sub => .{ .scalar = try resolveScalar(env, b.operands[0]) - try resolveScalar(env, b.operands[1]) },
+        .mul => .{ .scalar = try resolveScalar(env, b.operands[0]) * try resolveScalar(env, b.operands[1]) },
         .div => {
-            const lhs = try resolveScalar(env, b.lhs);
-            const rhs = try resolveScalar(env, b.rhs);
+            const lhs = try resolveScalar(env, b.operands[0]);
+            const rhs = try resolveScalar(env, b.operands[1]);
             if (rhs == 0.0) return error.DivisionByZero;
             return .{ .scalar = lhs / rhs };
         },
         // Constructors
         .point => .{ .point = .{
-            try resolveScalar(env, b.lhs),
-            try resolveScalar(env, b.rhs),
+            try resolveScalar(env, b.operands[0]),
+            try resolveScalar(env, b.operands[1]),
+        } },
+        .bezier => .{ .bezier = .{
+            (try resolveOperand(env, b.operands[0])).asPoint(),
+            (try resolveOperand(env, b.operands[1])).asPoint(),
+            (try resolveOperand(env, b.operands[2])).asPoint(),
+            (try resolveOperand(env, b.operands[3])).asPoint(),
         } },
     };
 }
@@ -620,4 +636,68 @@ test "eval: point copy" {
     try std.testing.expectEqual(Type.point, q.ty);
     try std.testing.expectEqual(@as(f64, 100.0), q.value.point[0]);
     try std.testing.expectEqual(@as(f64, 50.0), q.value.point[1]);
+}
+
+test "eval: bezier constructor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p1 : point = point 0mm 0mm
+        \\%p2 : point = point 100mm 0mm
+        \\%p3 : point = point 100mm 100mm
+        \\%p4 : point = point 0mm 100mm
+        \\%c : bezier = bezier %p1 %p2 %p3 %p4
+    );
+    defer result.deinit();
+
+    const c = findBinding(result.bindings, "c").?;
+    try std.testing.expectEqual(Type.bezier, c.ty);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.bezier[0][0]);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.bezier[0][1]);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.bezier[1][0]);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.bezier[1][1]);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.bezier[2][0]);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.bezier[2][1]);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.bezier[3][0]);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.bezier[3][1]);
+}
+
+test "eval: bezier with ref args" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\%p1 : point = point %head 0mm
+        \\%p2 : point = point 0mm %head
+        \\%c : bezier = bezier %p1 %p2 %p1 %p2
+    );
+    defer result.deinit();
+
+    const c = findBinding(result.bindings, "c").?;
+    try std.testing.expectEqual(Type.bezier, c.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.bezier[0][0]);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.bezier[0][1]);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.bezier[1][0]);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.bezier[1][1]);
+}
+
+test "eval: bezier copy" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p1 : point = point 0mm 0mm
+        \\%p2 : point = point 100mm 100mm
+        \\%c : bezier = bezier %p1 %p2 %p1 %p2
+        \\%d : bezier = %c
+    );
+    defer result.deinit();
+
+    const d = findBinding(result.bindings, "d").?;
+    try std.testing.expectEqual(Type.bezier, d.ty);
+    try std.testing.expectEqual(@as(f64, 0.0), d.value.bezier[0][0]);
+    try std.testing.expectEqual(@as(f64, 100.0), d.value.bezier[1][0]);
 }

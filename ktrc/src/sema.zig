@@ -2,6 +2,7 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const Ast = ast.Ast;
 const Diagnostic = ast.Diagnostic;
+const ir = @import("ir.zig");
 
 pub const Type = enum {
     /// A length value with a unit (mm, cm).
@@ -12,6 +13,8 @@ pub const Type = enum {
     f64,
     /// A 2D coordinate (x: length, y: length).
     point,
+    /// Cubic Bezier curve (4 control points).
+    bezier,
     /// Unresolvable value; suppresses cascading diagnostics.
     poison,
 };
@@ -124,39 +127,40 @@ const Analyzer = struct {
         const name = self.tree.tokenSlice(node.main_token);
         const args = self.tree.callArgs(node_index);
 
-        // Built-in constructor lookup
-        const Sig = struct { params: []const Type, ret: Type };
-        const sig: ?Sig = if (std.mem.eql(u8, name, "point"))
-            .{ .params = &.{ .length, .length }, .ret = .point }
-        else
-            null;
-
-        const s = sig orelse {
+        // Look up in the centralized builtin registry (ir.zig).
+        const sig = ir.builtin_sigs.get(name) orelse {
             try self.addDiag(.unknown_function, node.main_token);
             return .poison;
         };
 
         // Check argument count.
-        if (args.len != s.params.len) {
+        if (args.len != sig.params.len) {
             try self.addDiag(.wrong_argument_count, node.main_token);
             return .poison;
         }
 
         // Check each argument type.
         var has_poison = false;
-        for (args, s.params) |arg_idx, expected_ty| {
+        for (args, sig.params) |arg_idx, expected_ir_ty| {
             const actual_ty = try self.resolveType(arg_idx);
             if (actual_ty == .poison) {
                 has_poison = true;
                 continue;
             }
+            const expected_ty = mapFromIrType(expected_ir_ty);
             if (actual_ty != expected_ty) {
                 try self.addDiag(.argument_type_mismatch, self.tree.nodes.items(.main_token)[arg_idx]);
             }
         }
 
         if (has_poison) return .poison;
-        return s.ret;
+        return mapFromIrType(sig.ret);
+    }
+
+    /// Map an ir.Type to a sema.Type. The IR type enum is a subset of the
+    /// sema type enum (no poison), so this is always valid.
+    fn mapFromIrType(ir_ty: ir.Type) Type {
+        return std.meta.stringToEnum(Type, @tagName(ir_ty)).?;
     }
 
     fn resolveArithmeticType(
@@ -672,6 +676,96 @@ test "analyze: point poison propagation" {
 test "analyze: point in arithmetic is type mismatch" {
     const allocator = std.testing.allocator;
     const source: [:0]const u8 = "let p = point(100mm, 50mm) let x = p + 1";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.type_mismatch, sem.diagnostics[0].tag);
+}
+
+test "analyze: bezier constructor resolves to bezier type" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let p1 = point(0mm, 0mm)
+        \\let p2 = point(100mm, 0mm)
+        \\let p3 = point(100mm, 100mm)
+        \\let p4 = point(0mm, 100mm)
+        \\let c = bezier(p1, p2, p3, p4)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.bezier, sem.symbols.get("c").?.ty);
+}
+
+test "analyze: bezier rejects non-point args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let p1 = point(0mm, 0mm)
+        \\let c = bezier(p1, p1, p1, 100mm)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.argument_type_mismatch, sem.diagnostics[0].tag);
+}
+
+test "analyze: bezier rejects wrong arg count" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let p1 = point(0mm, 0mm)
+        \\let c = bezier(p1, p1, p1)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.wrong_argument_count, sem.diagnostics[0].tag);
+}
+
+test "analyze: bezier poison propagation" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let p1 = point(0mm, 0mm)
+        \\let c = bezier(p1, p1, p1, unknown)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expectEqual(1, sem.diagnostics.len);
+    try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
+    try std.testing.expectEqual(.poison, sem.symbols.get("c").?.ty);
+}
+
+test "analyze: bezier in arithmetic is type mismatch" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let p1 = point(0mm, 0mm)
+        \\let c = bezier(p1, p1, p1, p1)
+        \\let x = c + 1
+    ;
 
     var tree = try parser.parse(allocator, source);
     defer tree.deinit();

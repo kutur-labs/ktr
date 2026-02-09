@@ -6,6 +6,7 @@ pub const Type = enum(u8) {
     length,
     percentage,
     point,
+    bezier,
 
     pub fn toStr(self: Type) []const u8 {
         return @tagName(self);
@@ -64,6 +65,7 @@ pub const Op = enum(u8) {
     mul,
     div,
     point,
+    bezier,
 
     pub fn toStr(self: Op) []const u8 {
         return @tagName(self);
@@ -72,7 +74,32 @@ pub const Op = enum(u8) {
     pub fn fromStr(s: []const u8) ?Op {
         return std.meta.stringToEnum(Op, s);
     }
+
+    /// Returns true for constructor ops (`point`, `bezier`) as opposed to
+    /// arithmetic ops (`add`, `sub`, `mul`, `div`).
+    pub fn isConstructor(self: Op) bool {
+        return switch (self) {
+            .point, .bezier => true,
+            .add, .sub, .mul, .div => false,
+        };
+    }
 };
+
+// ─── Builtin function signatures ────────────────────────────────────────────
+
+/// Signature of a built-in constructor function. Single source of truth used
+/// by both semantic analysis (type checking) and lowering (name → Op mapping).
+pub const BuiltinSig = struct {
+    op: Op,
+    params: []const Type,
+    ret: Type,
+};
+
+/// Registry of all built-in constructor functions, keyed by source-level name.
+pub const builtin_sigs = std.StaticStringMap(BuiltinSig).initComptime(.{
+    .{ "point", BuiltinSig{ .op = .point, .params = &.{ .length, .length }, .ret = .point } },
+    .{ "bezier", BuiltinSig{ .op = .bezier, .params = &.{ .point, .point, .point, .point }, .ret = .bezier } },
+});
 
 pub const Operand = union(enum) {
     /// Reference to another binding: `%name`.
@@ -106,8 +133,7 @@ pub const Inst = struct {
 
     pub const Builtin = struct {
         op: Op,
-        lhs: Operand,
-        rhs: Operand,
+        operands: []const Operand,
     };
 
     pub const Rhs = union(enum) {
@@ -123,7 +149,14 @@ pub const Inst = struct {
             return switch (a) {
                 .constant => |av| av.eql(b.constant),
                 .copy => |ar| std.mem.eql(u8, ar, b.copy),
-                .builtin => |ab| ab.op == b.builtin.op and ab.lhs.eql(b.builtin.lhs) and ab.rhs.eql(b.builtin.rhs),
+                .builtin => |ab| {
+                    if (ab.op != b.builtin.op) return false;
+                    if (ab.operands.len != b.builtin.operands.len) return false;
+                    for (ab.operands, b.builtin.operands) |a_op, b_op| {
+                        if (!a_op.eql(b_op)) return false;
+                    }
+                    return true;
+                },
             };
         }
     };
@@ -188,7 +221,7 @@ pub fn isTemp(name: []const u8) bool {
 // --- Tests ---
 
 test "type round-trip through string" {
-    inline for (.{ Type.f64, Type.length, Type.percentage, Type.point }) |ty| {
+    inline for (.{ Type.f64, Type.length, Type.percentage, Type.point, Type.bezier }) |ty| {
         try std.testing.expectEqual(ty, Type.fromStr(ty.toStr()).?);
     }
 }
