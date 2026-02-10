@@ -1,0 +1,168 @@
+input neck_to_shoulder_top_height = 40mm
+input shoulder_top_to_chest_height = 180mm
+input chest_to_waist_height = 240mm
+input waist_to_bottom_height = 100mm
+input shoulder_width = 170mm
+input neckhole_depth = 30mm
+input armhole_depth = 55mm
+input chest_width = 580mm
+
+let top_left_x = 0mm
+let top_left_y = 0mm
+let top_middle_x = chest_width / 2
+let top_middle_y = 0mm
+let top_right_x = chest_width
+let top_right_y = 0mm
+
+let top_left_point = point(top_left_x, top_left_y)
+let top_middle_point = point(top_middle_x, top_middle_y)
+let top_right_point = point(top_right_x, top_right_y)
+let top_left_line = line(top_left_point, top_middle_point)
+let top_right_line = line(top_middle_point, top_right_point)
+
+let sleeve_left_x = 0mm
+let sleeve_left_y = neck_to_shoulder_top_height
+let sleeve_middle_x = chest_width / 2
+let sleeve_middle_y = neck_to_shoulder_top_height
+let sleeve_right_x = chest_width
+let sleeve_right_y = neck_to_shoulder_top_height
+
+let sleeve_left_point = point(sleeve_left_x, sleeve_left_y)
+let sleeve_middle_point = point(sleeve_middle_x, sleeve_middle_y)
+let sleeve_right_point = point(sleeve_right_x, sleeve_right_y)
+let sleeve_left_line = line(sleeve_left_point, sleeve_middle_point)
+let sleeve_right_line = line(sleeve_middle_point, sleeve_right_point)
+
+let top_middle_to_sleeve_middle_line = line(top_middle_point, sleeve_middle_point)
+
+let top_armhole_left_x = armhole_depth
+let top_armhole_left_y = 0mm
+let sleeve_armhole_left_x = armhole_depth
+let sleeve_armhole_left_y = neck_to_shoulder_top_height
+let chest_armhole_left_x = armhole_depth
+let chest_armhole_left_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height
+
+let top_armhole_left_point = point(top_armhole_left_x, top_armhole_left_y)
+let sleeve_armhole_left_point = point(sleeve_armhole_left_x, sleeve_armhole_left_y)
+let chest_armhole_left_point = point(chest_armhole_left_x, chest_armhole_left_y)
+
+let top_armhole_right_x = chest_width - armhole_depth
+let top_armhole_right_y = 0mm
+let sleeve_armhole_right_x = chest_width - armhole_depth
+let sleeve_armhole_right_y = neck_to_shoulder_top_height
+let chest_armhole_right_x = chest_width - armhole_depth
+let chest_armhole_right_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height
+
+let top_armhole_right_point = point(top_armhole_right_x, top_armhole_right_y)
+let sleeve_armhole_right_point = point(sleeve_armhole_right_x, sleeve_armhole_right_y)
+let chest_armhole_right_point = point(chest_armhole_right_x, chest_armhole_right_y)
+
+let top_neckhole_left_x = armhole_depth + shoulder_width
+let top_neckhole_left_y = 0mm
+let bottom_neckhole_left_x = armhole_depth + shoulder_width
+let bottom_neckhole_left_y = neck_to_shoulder_top_height + neckhole_depth
+
+let top_neckhole_left_point = point(top_neckhole_left_x, top_neckhole_left_y)
+let bottom_neckhole_left_point = point(bottom_neckhole_left_x, bottom_neckhole_left_y)
+
+let top_neckhole_right_x = chest_width - armhole_depth - shoulder_width
+let top_neckhole_right_y = 0mm
+let bottom_neckhole_right_x = chest_width - armhole_depth - shoulder_width
+let bottom_neckhole_right_y = neck_to_shoulder_top_height + neckhole_depth
+
+let top_neckhole_right_point = point(top_neckhole_right_x, top_neckhole_right_y)
+let bottom_neckhole_right_point = point(bottom_neckhole_right_x, bottom_neckhole_right_y)
+
+let bottom_neckhole_mid_x = chest_width / 2
+let bottom_neckhole_mid_y = neck_to_shoulder_top_height + neckhole_depth
+let bottom_neckhole_mid_point = point(bottom_neckhole_mid_x, bottom_neckhole_mid_y)
+
+let chest_left_x = 0mm
+let chest_left_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height
+let chest_middle_x = chest_width / 2
+let chest_middle_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height
+let chest_right_x = chest_width
+let chest_right_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height
+
+let chest_left_point = point(chest_left_x, chest_left_y)
+let chest_middle_point = point(chest_middle_x, chest_middle_y)
+let chest_right_point = point(chest_right_x, chest_right_y)
+let chest_left_line = line(chest_left_point, chest_middle_point)
+let chest_right_line = line(chest_middle_point, chest_right_point)
+
+let chest_middle_to_waist_middle_line = line(sleeve_middle_point, chest_middle_point)
+
+let waist_left_x = 0mm
+let waist_left_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height + chest_to_waist_height
+let waist_middle_x = chest_width / 2
+let waist_middle_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height + chest_to_waist_height
+let waist_right_x = chest_width
+let waist_right_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height + chest_to_waist_height
+
+let waist_left_point = point(waist_left_x, waist_left_y)
+let waist_middle_point = point(waist_middle_x, waist_middle_y)
+let waist_right_point = point(waist_right_x, waist_right_y)
+let waist_left_line = line(waist_left_point, waist_middle_point)
+let waist_right_line = line(waist_middle_point, waist_right_point)
+
+let waist_middle_to_bottom_middle_line = line(chest_middle_point, waist_middle_point)
+
+let bottom_left_x = 0mm
+let bottom_left_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height + chest_to_waist_height + waist_to_bottom_height
+let bottom_middle_x = chest_width / 2
+let bottom_middle_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height + chest_to_waist_height + waist_to_bottom_height
+let bottom_right_x = chest_width
+let bottom_right_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height + chest_to_waist_height + waist_to_bottom_height
+
+let bottom_left_point = point(bottom_left_x, bottom_left_y)
+let bottom_middle_point = point(bottom_middle_x, bottom_middle_y)
+let bottom_right_point = point(bottom_right_x, bottom_right_y)
+let bottom_left_line = line(bottom_left_point, bottom_middle_point)
+let bottom_right_line = line(bottom_middle_point, bottom_right_point)
+
+let bottom_middle_to_sleeve_middle_line = line(waist_middle_point, bottom_middle_point)
+
+let sleeve_left_curve_cp1_x = armhole_depth
+let sleeve_left_curve_cp1_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height
+let sleeve_left_curve_cp2_x = armhole_depth + 30mm
+let sleeve_left_curve_cp2_y = 100mm + neck_to_shoulder_top_height
+
+let sleeve_left_curve_cp1_point = point(sleeve_left_curve_cp1_x, sleeve_left_curve_cp1_y)
+let sleeve_left_curve_cp2_point = point(sleeve_left_curve_cp2_x, sleeve_left_curve_cp2_y)
+let sleeve_left_curve = bezier(chest_left_point, sleeve_left_curve_cp1_point, sleeve_left_curve_cp2_point, sleeve_armhole_left_point)
+
+let sleeve_right_curve_cp1_x = chest_width - armhole_depth
+let sleeve_right_curve_cp1_y = neck_to_shoulder_top_height + shoulder_top_to_chest_height
+let sleeve_right_curve_cp2_x = chest_width - armhole_depth - 30mm
+let sleeve_right_curve_cp2_y = 100mm + neck_to_shoulder_top_height
+
+let sleeve_right_curve_cp1_point = point(sleeve_right_curve_cp1_x, sleeve_right_curve_cp1_y)
+let sleeve_right_curve_cp2_point = point(sleeve_right_curve_cp2_x, sleeve_right_curve_cp2_y)
+let sleeve_right_curve = bezier(chest_right_point, sleeve_right_curve_cp1_point, sleeve_right_curve_cp2_point, sleeve_armhole_right_point)
+
+let neck_left_curve_cp1_x = armhole_depth + shoulder_width - 10mm
+let neck_left_curve_cp1_y = neckhole_depth + 10mm
+let neck_left_curve_cp2_x = armhole_depth + shoulder_width + 10mm
+let neck_left_curve_cp2_y = neck_to_shoulder_top_height + neckhole_depth
+
+let neck_left_curve_cp1_point = point(neck_left_curve_cp1_x, neck_left_curve_cp1_y)
+let neck_left_curve_cp2_point = point(neck_left_curve_cp2_x, neck_left_curve_cp2_y)
+let neck_left_curve = bezier(top_neckhole_left_point, neck_left_curve_cp1_point, neck_left_curve_cp2_point, bottom_neckhole_mid_point)
+
+let neck_right_curve_cp1_x = chest_width - armhole_depth - shoulder_width + 10mm
+let neck_right_curve_cp1_y = neckhole_depth + 10mm
+let neck_right_curve_cp2_x = chest_width - armhole_depth - shoulder_width - 10mm
+let neck_right_curve_cp2_y = neck_to_shoulder_top_height + neckhole_depth
+
+let neck_right_curve_cp1_point = point(neck_right_curve_cp1_x, neck_right_curve_cp1_y)
+let neck_right_curve_cp2_point = point(neck_right_curve_cp2_x, neck_right_curve_cp2_y)
+let neck_right_curve = bezier(top_neckhole_right_point, neck_right_curve_cp1_point, neck_right_curve_cp2_point, bottom_neckhole_mid_point)
+
+let shoulder_left_line = line(top_neckhole_left_point, sleeve_armhole_left_point)
+let shoulder_right_line = line(top_neckhole_right_point, sleeve_armhole_right_point)
+
+let side_left_line = line(chest_left_point, waist_left_point)
+let side_right_line = line(chest_right_point, waist_right_point)
+
+let hem_left_line = line(waist_left_point, bottom_left_point)
+let hem_right_line = line(waist_right_point, bottom_right_point)

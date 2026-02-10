@@ -25,12 +25,14 @@ pub const RuntimeValue = union(enum) {
     point: [2]f64,
     /// Cubic Bezier curve: 4 control points, each [x, y] in mm.
     bezier: [4][2]f64,
+    /// Straight line segment: [start, end], each [x, y] in mm.
+    line: [2][2]f64,
 
     /// Extract the scalar payload. Asserts the value is a scalar.
     pub fn asScalar(self: RuntimeValue) f64 {
         return switch (self) {
             .scalar => |v| v,
-            .point, .bezier => unreachable,
+            .point, .bezier, .line => unreachable,
         };
     }
 
@@ -38,7 +40,15 @@ pub const RuntimeValue = union(enum) {
     pub fn asPoint(self: RuntimeValue) [2]f64 {
         return switch (self) {
             .point => |p| p,
-            .scalar, .bezier => unreachable,
+            .scalar, .bezier, .line => unreachable,
+        };
+    }
+
+    /// Extract the line payload. Asserts the value is a line.
+    pub fn asLine(self: RuntimeValue) [2][2]f64 {
+        return switch (self) {
+            .line => |l| l,
+            .scalar, .point, .bezier => unreachable,
         };
     }
 };
@@ -185,6 +195,10 @@ fn evalBuiltin(env: *const std.StringHashMapUnmanaged(RuntimeValue), b: Inst.Bui
             (try resolveOperand(env, b.operands[1])).asPoint(),
             (try resolveOperand(env, b.operands[2])).asPoint(),
             (try resolveOperand(env, b.operands[3])).asPoint(),
+        } },
+        .line => .{ .line = .{
+            (try resolveOperand(env, b.operands[0])).asPoint(),
+            (try resolveOperand(env, b.operands[1])).asPoint(),
         } },
     };
 }
@@ -700,4 +714,82 @@ test "eval: bezier copy" {
     try std.testing.expectEqual(Type.bezier, d.ty);
     try std.testing.expectEqual(@as(f64, 0.0), d.value.bezier[0][0]);
     try std.testing.expectEqual(@as(f64, 100.0), d.value.bezier[1][0]);
+}
+
+test "eval: line constructor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%a : point = point 0mm 0mm
+        \\%b : point = point 100mm 50mm
+        \\%c : line = line %a %b
+    );
+    defer result.deinit();
+
+    const c = findBinding(result.bindings, "c").?;
+    try std.testing.expectEqual(Type.line, c.ty);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.line[0][0]);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.line[0][1]);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.line[1][0]);
+    try std.testing.expectEqual(@as(f64, 50.0), c.value.line[1][1]);
+}
+
+test "eval: line with ref args" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\%p1 : point = point %head 0mm
+        \\%p2 : point = point 0mm %head
+        \\%c : line = line %p1 %p2
+    );
+    defer result.deinit();
+
+    const c = findBinding(result.bindings, "c").?;
+    try std.testing.expectEqual(Type.line, c.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.line[0][0]);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.line[0][1]);
+    try std.testing.expectEqual(@as(f64, 0.0), c.value.line[1][0]);
+    try std.testing.expectEqual(@as(f64, 100.0), c.value.line[1][1]);
+}
+
+test "eval: line copy" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%a : point = point 0mm 0mm
+        \\%b : point = point 100mm 50mm
+        \\%c : line = line %a %b
+        \\%d : line = %c
+    );
+    defer result.deinit();
+
+    const d = findBinding(result.bindings, "d").?;
+    try std.testing.expectEqual(Type.line, d.ty);
+    try std.testing.expectEqual(@as(f64, 0.0), d.value.line[0][0]);
+    try std.testing.expectEqual(@as(f64, 100.0), d.value.line[1][0]);
+    try std.testing.expectEqual(@as(f64, 50.0), d.value.line[1][1]);
+}
+
+test "eval: line with cm normalization" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%a : point = point 2cm 3cm
+        \\%b : point = point 5cm 1cm
+        \\%c : line = line %a %b
+    );
+    defer result.deinit();
+
+    const c = findBinding(result.bindings, "c").?;
+    try std.testing.expectEqual(Type.line, c.ty);
+    try std.testing.expectEqual(@as(f64, 20.0), c.value.line[0][0]);
+    try std.testing.expectEqual(@as(f64, 30.0), c.value.line[0][1]);
+    try std.testing.expectEqual(@as(f64, 50.0), c.value.line[1][0]);
+    try std.testing.expectEqual(@as(f64, 10.0), c.value.line[1][1]);
 }

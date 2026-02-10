@@ -128,6 +128,7 @@ type_name        = "f64"
                  | "percentage"
                  | "point"
                  | "bezier"
+                 | "line"
                  | "bool" ;
 
 

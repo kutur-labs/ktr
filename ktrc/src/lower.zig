@@ -642,3 +642,82 @@ test "lower: bezier with ref args" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+test "lower: line with literal point args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let c = line(a, b)
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    // 2 point instructions + 1 line instruction = 3
+    try std.testing.expectEqual(3, result.instructions.len);
+
+    const inst = result.instructions[2];
+    try std.testing.expectEqualStrings("c", inst.name);
+    try std.testing.expectEqual(Type.line, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.line, b.op);
+            try std.testing.expectEqual(2, b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("a", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("b", b.operands[1].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: line with ref args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\input head = 100mm
+        \\let a = point(head, 0mm)
+        \\let b = point(0mm, head)
+        \\let c = line(a, b)
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    // 2 point instructions + 1 line instruction = 3
+    try std.testing.expectEqual(3, result.instructions.len);
+
+    const inst = result.instructions[2];
+    try std.testing.expectEqualStrings("c", inst.name);
+    try std.testing.expectEqual(Type.line, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.line, b.op);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("a", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("b", b.operands[1].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: line with expression args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm * 2, 50mm / 2)
+        \\let c = line(a, b)
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    // a: point, temp0: mul, temp1: div, b: point, c: line = 5
+    try std.testing.expectEqual(5, result.instructions.len);
+
+    const inst = result.instructions[4];
+    try std.testing.expectEqualStrings("c", inst.name);
+    try std.testing.expectEqual(Type.line, inst.ty);
+}

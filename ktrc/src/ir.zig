@@ -7,6 +7,7 @@ pub const Type = enum(u8) {
     percentage,
     point,
     bezier,
+    line,
 
     pub fn toStr(self: Type) []const u8 {
         return @tagName(self);
@@ -66,6 +67,7 @@ pub const Op = enum(u8) {
     div,
     point,
     bezier,
+    line,
 
     pub fn toStr(self: Op) []const u8 {
         return @tagName(self);
@@ -75,11 +77,11 @@ pub const Op = enum(u8) {
         return std.meta.stringToEnum(Op, s);
     }
 
-    /// Returns true for constructor ops (`point`, `bezier`) as opposed to
+    /// Returns true for constructor ops (`point`, `bezier`, `line`) as opposed to
     /// arithmetic ops (`add`, `sub`, `mul`, `div`).
     pub fn isConstructor(self: Op) bool {
         return switch (self) {
-            .point, .bezier => true,
+            .point, .bezier, .line => true,
             .add, .sub, .mul, .div => false,
         };
     }
@@ -99,6 +101,7 @@ pub const BuiltinSig = struct {
 pub const builtin_sigs = std.StaticStringMap(BuiltinSig).initComptime(.{
     .{ "point", BuiltinSig{ .op = .point, .params = &.{ .length, .length }, .ret = .point } },
     .{ "bezier", BuiltinSig{ .op = .bezier, .params = &.{ .point, .point, .point, .point }, .ret = .bezier } },
+    .{ "line", BuiltinSig{ .op = .line, .params = &.{ .point, .point }, .ret = .line } },
 });
 
 pub const Operand = union(enum) {
@@ -221,7 +224,7 @@ pub fn isTemp(name: []const u8) bool {
 // --- Tests ---
 
 test "type round-trip through string" {
-    inline for (.{ Type.f64, Type.length, Type.percentage, Type.point, Type.bezier }) |ty| {
+    inline for (.{ Type.f64, Type.length, Type.percentage, Type.point, Type.bezier, Type.line }) |ty| {
         try std.testing.expectEqual(ty, Type.fromStr(ty.toStr()).?);
     }
 }

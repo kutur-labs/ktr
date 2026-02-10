@@ -487,3 +487,35 @@ test "parse: bezier instruction with 4 operands" {
         else => return error.TestUnexpectedResult,
     }
 }
+
+test "parse: line instruction with 2 operands" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\%a : point = point 0mm 0mm
+        \\%b : point = point 100mm 50mm
+        \\%c : line = line %a %b
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(3, result.instructions.len);
+
+    const inst = result.instructions[2];
+    try std.testing.expectEqualStrings("c", inst.name);
+    try std.testing.expectEqual(Type.line, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.line, b.op);
+            try std.testing.expectEqual(2, b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("a", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("b", b.operands[1].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}

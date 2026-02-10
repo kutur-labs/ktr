@@ -29,7 +29,7 @@ fn opToInfix(op: Op) []const u8 {
         .sub => " - ",
         .mul => " * ",
         .div => " / ",
-        .point, .bezier => unreachable,
+        .point, .bezier, .line => unreachable,
     };
 }
 
@@ -72,7 +72,7 @@ fn opPrecedence(op: Op) u8 {
     return switch (op) {
         .add, .sub => 1,
         .mul, .div => 2,
-        .point, .bezier => unreachable,
+        .point, .bezier, .line => unreachable,
     };
 }
 
@@ -684,5 +684,76 @@ test "decompile roundtrip: bezier constructor" {
         \\let p3 = point(100mm, 100mm)
         \\let p4 = point(0mm, 100mm)
         \\let c = bezier(p1, p2, p3, p4)
+    );
+}
+
+test "decompile: line constructor" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const insts = try ally.alloc(Inst, 3);
+    insts[0] = .{
+        .name = try ally.dupe(u8, "a"),
+        .ty = .point,
+        .rhs = .{ .builtin = .{
+            .op = .point,
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .literal = .{ .number = 0.0, .unit = .mm } },
+                Operand{ .literal = .{ .number = 0.0, .unit = .mm } },
+            }),
+        } },
+    };
+    insts[1] = .{
+        .name = try ally.dupe(u8, "b"),
+        .ty = .point,
+        .rhs = .{ .builtin = .{
+            .op = .point,
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .literal = .{ .number = 100.0, .unit = .mm } },
+                Operand{ .literal = .{ .number = 50.0, .unit = .mm } },
+            }),
+        } },
+    };
+    insts[2] = .{
+        .name = try ally.dupe(u8, "c"),
+        .ty = .line,
+        .rhs = .{ .builtin = .{
+            .op = .line,
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .ref = try ally.dupe(u8, "a") },
+                Operand{ .ref = try ally.dupe(u8, "b") },
+            }),
+        } },
+    };
+
+    var ir_data = Ir{ .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try decompileToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    const expected =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let c = line(a, b)
+        \\
+    ;
+    try std.testing.expectEqualStrings(expected, output);
+}
+
+test "decompile roundtrip: line constructor" {
+    try expectDecompileRoundtrip(
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let c = line(a, b)
+    );
+}
+
+test "decompile roundtrip: line with expression args" {
+    try expectDecompileRoundtrip(
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let c = line(a, b)
     );
 }

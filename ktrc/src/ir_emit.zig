@@ -450,3 +450,55 @@ test "roundtrip: bezier emit then parse" {
         \\let c = bezier(p1, p2, p3, p4)
     );
 }
+
+test "emit: line builtin" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const insts = try ally.alloc(ir.Inst, 3);
+    insts[0] = .{ .name = try ally.dupe(u8, "a"), .ty = .point, .rhs = .{ .builtin = .{
+        .op = .point,
+        .operands = try ally.dupe(ir.Operand, &.{
+            ir.Operand{ .literal = .{ .number = 0.0, .unit = .mm } },
+            ir.Operand{ .literal = .{ .number = 0.0, .unit = .mm } },
+        }),
+    } } };
+    insts[1] = .{ .name = try ally.dupe(u8, "b"), .ty = .point, .rhs = .{ .builtin = .{
+        .op = .point,
+        .operands = try ally.dupe(ir.Operand, &.{
+            ir.Operand{ .literal = .{ .number = 100.0, .unit = .mm } },
+            ir.Operand{ .literal = .{ .number = 50.0, .unit = .mm } },
+        }),
+    } } };
+    insts[2] = .{ .name = try ally.dupe(u8, "c"), .ty = .line, .rhs = .{ .builtin = .{
+        .op = .line,
+        .operands = try ally.dupe(ir.Operand, &.{
+            ir.Operand{ .ref = try ally.dupe(u8, "a") },
+            ir.Operand{ .ref = try ally.dupe(u8, "b") },
+        }),
+    } } };
+
+    var ir_data = ir.Ir{ .instructions = insts, .arena = arena };
+    defer ir_data.deinit();
+
+    const output = try emitToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\# ktr-ir v1
+        \\
+        \\%a : point = point 0mm 0mm
+        \\%b : point = point 100mm 50mm
+        \\%c : line = line %a %b
+        \\
+    , output);
+}
+
+test "roundtrip: line emit then parse" {
+    try expectEmitRoundtrip(
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let c = line(a, b)
+    );
+}

@@ -207,6 +207,7 @@ type_name        = "f64"
                  | "percentage"
                  | "point"
                  | "bezier"
+                 | "line"
                  | "bool" ;
 ```
 
@@ -233,6 +234,7 @@ Comparison operators (`==`, `>`, `<`, etc.) appear only in `assert` and
 | `percentage` | Percentage value (`%` suffix in source)             |
 | `point`      | 2D coordinate `(x: length, y: length)`              |
 | `bezier`     | Cubic Bezier curve (4 control points)               |
+| `line`       | Straight segment between two points                 |
 | `bool`       | Boolean (internal to assertions/requires)           |
 
 ### 4.1 Units
@@ -340,6 +342,7 @@ SVG). The string label is the human-readable name.
 |-----------------------------|--------------------------------------------|
 | `point(x, y)`              | `(length, length) -> point`                |
 | `bezier(p1, p2, p3, p4)`   | `(point, point, point, point) -> bezier`   |
+| `line(start, end)`         | `(point, point) -> line`                   |
 
 ### 6.2 Point Methods
 
@@ -429,13 +432,14 @@ The compiler currently implements the following subset:
 - [x] Runtime WASM module with JSON output
 - [x] `input` declarations with literal defaults (`input head = 100mm`)
 - [x] Runtime input overrides (parametric evaluation)
+- [x] `point`, `bezier`, `line` constructor types with full pipeline support
 
 Planned (not yet implemented):
 
 - [ ] `input` assertion blocks (`assert head > 0mm`)
 - [ ] `fn` definitions with typed parameters
-- [ ] Function calls and constructor calls (`point()`, `bezier()`)
+- [ ] Function calls (user-defined)
 - [ ] Method calls (`.up()`, `.dx()`, etc.)
 - [ ] `search` solver blocks
 - [ ] `export` statements
-- [ ] `point`, `bezier`, `bool` types
+- [ ] `bool` type

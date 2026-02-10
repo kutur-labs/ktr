@@ -125,12 +125,13 @@ type             = "f64"
                  | "percentage"
                  | "point"
                  | "bezier"
+                 | "line"
                  | "bool" ;
 
 cmp_op           = "eq" | "ne" | "gt" | "lt" | "gte" | "lte" ;
 
 builtin          = "add" | "sub" | "mul" | "div"
-                 | "point" | "bezier"
+                 | "point" | "bezier" | "line"
                  | "shift_up" | "shift_down" | "shift_left" | "shift_right"
                  | "dx" | "dy"
                  | "curve_length" ;

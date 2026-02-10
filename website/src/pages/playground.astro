@@ -1,47 +1,7 @@
 ---
 import MainLayout from "../layouts/main-layout.astro";
-
-const defaultCode = `input head = 580mm
-input shoulder = 125mm
-input armhole_depth = 210mm
-input back_length = 400mm
-input ease = 40mm
-
-let neck_w = head / 10 + 5mm
-let neck_drop = neck_w + 8mm
-let side_w = shoulder + neck_w + ease / 4
-let sh_drop = back_length / 16
-
-let cf_neck = point(0mm, neck_drop)
-let neck_cp1 = point(neck_w / 3, neck_drop / 3)
-let neck_cp2 = point(neck_w * 2 / 3, 3mm)
-let sh_neck = point(neck_w, 0mm)
-let neckline = bezier(cf_neck, neck_cp1, neck_cp2, sh_neck)
-
-let sh_tip = point(side_w, sh_drop)
-let sh_cp1 = point(neck_w + shoulder / 3, 0mm - 2mm)
-let sh_cp2 = point(neck_w + shoulder * 2 / 3, sh_drop / 2)
-let shoulder_line = bezier(sh_neck, sh_cp1, sh_cp2, sh_tip)
-
-let arm_cp1 = point(side_w + ease / 3, sh_drop + armhole_depth / 4)
-let arm_cp2 = point(side_w + ease / 4, armhole_depth * 3 / 4)
-let underarm = point(side_w, armhole_depth)
-let scye = bezier(sh_tip, arm_cp1, arm_cp2, underarm)
-
-let side_hem = point(side_w, back_length)
-let side_len = back_length - armhole_depth
-let side_cp1 = point(side_w + 2mm, armhole_depth + side_len / 3)
-let side_cp2 = point(side_w - 3mm, armhole_depth + side_len * 2 / 3)
-let side_seam = bezier(underarm, side_cp1, side_cp2, side_hem)
-
-let hem_cp1 = point(side_w * 2 / 3, back_length + 4mm)
-let hem_cp2 = point(side_w / 3, back_length + 4mm)
-let cf_hem = point(0mm, back_length)
-let hemline = bezier(side_hem, hem_cp1, hem_cp2, cf_hem)
-
-let cf_cp1 = point(0mm, back_length * 2 / 3)
-let cf_cp2 = point(0mm, back_length / 3)
-let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
+import sourceKtr from "./source.ktr?raw";
+const defaultCode = sourceKtr;
 ---
 
 <MainLayout headerBorder>
@@ -294,7 +254,8 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
   svg:has(.svg-point:hover) .svg-point:not(:hover) {
     opacity: 0.35;
   }
-  svg:has(.svg-point:hover) path {
+  svg:has(.svg-point:hover) path,
+  svg:has(.svg-point:hover) line {
     opacity: 0.35;
   }
 </style>
@@ -473,6 +434,7 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
         "bool",
         "point",
         "bezier",
+        "line",
         "length",
         "percentage",
       ],
@@ -516,8 +478,8 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
           [/\binput\b/, "keyword"],
           [/%[a-zA-Z_]\w*/, "variable"],
           [/%\d+/, "variable"],
-          [/\b(length|percentage|f64|point|bezier|bool)\b/, "type"],
-          [/\b(add|sub|mul|div|point|bezier)\b(?=\s)/, "keyword.other"],
+          [/\b(length|percentage|f64|point|bezier|line|bool)\b/, "type"],
+          [/\b(add|sub|mul|div|point|bezier|line)\b(?=\s)/, "keyword.other"],
           [/\b\d+(\.\d+)?(mm|cm)\b/, "number.unit"],
           [/\b\d+\.\d+\b/, "number.float"],
           [/\b\d+\b/, "number"],
@@ -990,6 +952,20 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
           ")"
         );
       }
+      // Line values come as {start, end} objects from the runtime.
+      if (v !== null && typeof v === "object" && "start" in v && "end" in v) {
+        return (
+          "line((" +
+          formatNumber(v.start.x) +
+          ", " +
+          formatNumber(v.start.y) +
+          "), (" +
+          formatNumber(v.end.x) +
+          ", " +
+          formatNumber(v.end.y) +
+          "))"
+        );
+      }
       // Point values come as {x, y} objects from the runtime.
       if (v !== null && typeof v === "object" && "x" in v) {
         return "(" + formatNumber(v.x) + ", " + formatNumber(v.y) + ")";
@@ -1002,6 +978,7 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
       if (binding.type === "percentage") return "%";
       if (binding.type === "point") return "point";
       if (binding.type === "bezier") return "bezier";
+      if (binding.type === "line") return "line";
       return binding.type;
     }
 
@@ -1026,9 +1003,19 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
         );
       });
 
+      var lines = computed.filter(function (b) {
+        return (
+          b.type === "line" &&
+          b.value !== null &&
+          typeof b.value === "object" &&
+          "start" in b.value &&
+          "end" in b.value
+        );
+      });
+
       visualOutput.innerHTML = "";
 
-      if (points.length === 0 && beziers.length === 0) {
+      if (points.length === 0 && beziers.length === 0 && lines.length === 0) {
         var msg = document.createElement("span");
         msg.className = "text-xs font-mono text-primary-muted-foreground/40";
         msg.textContent = "No points to display";
@@ -1036,7 +1023,7 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
         return;
       }
 
-      // Compute bounding box from points and bezier control points.
+      // Compute bounding box from points, bezier control points, and line endpoints.
       var minX = Infinity,
         minY = Infinity,
         maxX = -Infinity,
@@ -1058,6 +1045,11 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
         expandBounds(bv.p2.x, bv.p2.y);
         expandBounds(bv.p3.x, bv.p3.y);
         expandBounds(bv.p4.x, bv.p4.y);
+      }
+      for (var i = 0; i < lines.length; i++) {
+        var lv = lines[i].value;
+        expandBounds(lv.start.x, lv.start.y);
+        expandBounds(lv.end.x, lv.end.y);
       }
 
       var rangeX = maxX - minX;
@@ -1146,6 +1138,40 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
         text.setAttribute("class", "text-primary-muted-foreground/50");
         text.textContent = beziers[i].name;
         svg.appendChild(text);
+      }
+
+      // Draw line segments.
+      for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i].value;
+        var lineEl = document.createElementNS(svgNS, "line");
+        lineEl.setAttribute("x1", ln.start.x);
+        lineEl.setAttribute("y1", ln.start.y);
+        lineEl.setAttribute("x2", ln.end.x);
+        lineEl.setAttribute("y2", ln.end.y);
+        lineEl.setAttribute("fill", "none");
+        lineEl.setAttribute("stroke", "currentColor");
+        lineEl.setAttribute("stroke-width", strokeW);
+        lineEl.setAttribute("class", "text-primary svg-line");
+        lineEl.setAttribute("stroke-linecap", "round");
+        svg.appendChild(lineEl);
+
+        // Draw a label at the midpoint.
+        var lmx = (ln.start.x + ln.end.x) / 2;
+        var lmy = (ln.start.y + ln.end.y) / 2;
+
+        var lineLabel = document.createElementNS(svgNS, "text");
+        lineLabel.setAttribute("x", lmx);
+        lineLabel.setAttribute("y", lmy - labelOffset);
+        lineLabel.setAttribute("text-anchor", "middle");
+        lineLabel.setAttribute("font-size", fontSize);
+        lineLabel.setAttribute(
+          "font-family",
+          "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
+        );
+        lineLabel.setAttribute("fill", "currentColor");
+        lineLabel.setAttribute("class", "text-primary-muted-foreground/50");
+        lineLabel.textContent = lines[i].name;
+        svg.appendChild(lineLabel);
       }
 
       // Draw dots and labels.
@@ -1446,9 +1472,6 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
           showError("eval: " + evalResult.error);
           statusEval.textContent = "";
         }
-
-        // Restart animation on recompile (new code = fresh start).
-        startAnimation();
       } else {
         // Keep last valid IR and results visible; just show markers + error bar.
         var markers = parseErrors(result.error);
@@ -1554,7 +1577,6 @@ let centre_front = bezier(cf_hem, cf_cp1, cf_cp2, cf_neck)`;
         versionEl.textContent =
           "ktr 0.1.0 \u00b7 ktr-ir v1 \u00b7 Zig WASM runtime \u00b7 Release";
         runCompile();
-        startAnimation();
       })
       .catch(function (err) {
         statusDecompile.textContent = "Failed to load WASM";

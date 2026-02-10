@@ -15,6 +15,8 @@ pub const Type = enum {
     point,
     /// Cubic Bezier curve (4 control points).
     bezier,
+    /// Straight segment between two points.
+    line,
     /// Unresolvable value; suppresses cascading diagnostics.
     poison,
 };
@@ -764,6 +766,92 @@ test "analyze: bezier in arithmetic is type mismatch" {
     const source: [:0]const u8 =
         \\let p1 = point(0mm, 0mm)
         \\let c = bezier(p1, p1, p1, p1)
+        \\let x = c + 1
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.type_mismatch, sem.diagnostics[0].tag);
+}
+
+test "analyze: line constructor resolves to line type" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let c = line(a, b)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.line, sem.symbols.get("c").?.ty);
+}
+
+test "analyze: line rejects non-point args" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let c = line(100mm, 50mm)";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.argument_type_mismatch, sem.diagnostics[0].tag);
+}
+
+test "analyze: line rejects wrong arg count" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let c = line(a)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.wrong_argument_count, sem.diagnostics[0].tag);
+}
+
+test "analyze: line poison propagation" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let c = line(a, unknown)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expectEqual(1, sem.diagnostics.len);
+    try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
+    try std.testing.expectEqual(.poison, sem.symbols.get("c").?.ty);
+}
+
+test "analyze: line in arithmetic is type mismatch" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let c = line(a, b)
         \\let x = c + 1
     ;
 
