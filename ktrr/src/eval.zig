@@ -100,8 +100,12 @@ pub fn eval(gpa: Allocator, ir_data: Ir, overrides: []const InputOverride) EvalE
     errdefer arena.deinit();
     const ally = arena.allocator();
 
+    // Pre-build function lookup map for O(1) calls.
+    const fn_map = try buildFnMap(ally, ir_data.functions);
+
     // Working environment: maps binding name -> resolved RuntimeValue.
-    var env = std.StringHashMapUnmanaged(RuntimeValue){};
+    var env = Env{};
+    const scope = Scope{ .bindings = &env, .parent = null };
 
     // Collect user-visible bindings (skip compiler temps).
     var bindings = std.ArrayListUnmanaged(Binding){};
@@ -121,11 +125,7 @@ pub fn eval(gpa: Allocator, ir_data: Ir, overrides: []const InputOverride) EvalE
 
     // Process instructions.
     for (ir_data.instructions) |inst| {
-        const value: RuntimeValue = switch (inst.rhs) {
-            .constant => |v| .{ .scalar = normalizeToMm(v) },
-            .copy => |name| env.get(name) orelse return error.UndefinedReference,
-            .builtin => |b| try evalBuiltin(&env, b),
-        };
+        const value = try evalInst(ally, scope, fn_map, inst);
 
         try env.put(ally, inst.name, value);
 
@@ -148,6 +148,31 @@ pub fn eval(gpa: Allocator, ir_data: Ir, overrides: []const InputOverride) EvalE
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
 
+const Env = std.StringHashMapUnmanaged(RuntimeValue);
+const FnMap = std.StringHashMapUnmanaged(ktr_ir.FnDef);
+
+/// A scope frame with optional parent link, forming a chain for nested
+/// function calls. Lookups walk the chain until found or exhausted.
+const Scope = struct {
+    bindings: *const Env,
+    parent: ?*const Scope,
+
+    fn get(self: Scope, name: []const u8) ?RuntimeValue {
+        if (self.bindings.get(name)) |v| return v;
+        if (self.parent) |p| return p.get(name);
+        return null;
+    }
+};
+
+/// Build a lookup map from function name -> FnDef for O(1) call resolution.
+fn buildFnMap(ally: Allocator, functions: []const ktr_ir.FnDef) Allocator.Error!FnMap {
+    var map = FnMap{};
+    for (functions) |f| {
+        try map.put(ally, f.name, f);
+    }
+    return map;
+}
+
 /// Normalize a Value to millimeters. Bare numbers and percentages pass
 /// through unchanged; lengths are converted to mm.
 fn normalizeToMm(v: Value) f64 {
@@ -158,49 +183,86 @@ fn normalizeToMm(v: Value) f64 {
     };
 }
 
-/// Resolve an operand to its RuntimeValue.
-fn resolveOperand(env: *const std.StringHashMapUnmanaged(RuntimeValue), operand: Operand) EvalError!RuntimeValue {
+/// Resolve an operand to its RuntimeValue via the scope chain.
+fn resolveOperand(scope: Scope, operand: Operand) EvalError!RuntimeValue {
     return switch (operand) {
-        .ref => |name| env.get(name) orelse return error.UndefinedReference,
+        .ref => |name| scope.get(name) orelse return error.UndefinedReference,
         .literal => |v| .{ .scalar = normalizeToMm(v) },
     };
 }
 
 /// Resolve an operand that must be a scalar (f64/length/percentage).
-fn resolveScalar(env: *const std.StringHashMapUnmanaged(RuntimeValue), operand: Operand) EvalError!f64 {
-    const rv = try resolveOperand(env, operand);
+fn resolveScalar(scope: Scope, operand: Operand) EvalError!f64 {
+    const rv = try resolveOperand(scope, operand);
     return rv.asScalar();
 }
 
 /// Evaluate a builtin operation.
-fn evalBuiltin(env: *const std.StringHashMapUnmanaged(RuntimeValue), b: Inst.Builtin) EvalError!RuntimeValue {
+fn evalBuiltin(scope: Scope, b: Inst.Builtin) EvalError!RuntimeValue {
     return switch (b.op) {
-        // Arithmetic: scalar x scalar -> scalar
-        .add => .{ .scalar = try resolveScalar(env, b.operands[0]) + try resolveScalar(env, b.operands[1]) },
-        .sub => .{ .scalar = try resolveScalar(env, b.operands[0]) - try resolveScalar(env, b.operands[1]) },
-        .mul => .{ .scalar = try resolveScalar(env, b.operands[0]) * try resolveScalar(env, b.operands[1]) },
+        .add => .{ .scalar = try resolveScalar(scope, b.operands[0]) + try resolveScalar(scope, b.operands[1]) },
+        .sub => .{ .scalar = try resolveScalar(scope, b.operands[0]) - try resolveScalar(scope, b.operands[1]) },
+        .mul => .{ .scalar = try resolveScalar(scope, b.operands[0]) * try resolveScalar(scope, b.operands[1]) },
         .div => {
-            const lhs = try resolveScalar(env, b.operands[0]);
-            const rhs = try resolveScalar(env, b.operands[1]);
+            const lhs = try resolveScalar(scope, b.operands[0]);
+            const rhs = try resolveScalar(scope, b.operands[1]);
             if (rhs == 0.0) return error.DivisionByZero;
             return .{ .scalar = lhs / rhs };
         },
-        // Constructors
         .point => .{ .point = .{
-            try resolveScalar(env, b.operands[0]),
-            try resolveScalar(env, b.operands[1]),
+            try resolveScalar(scope, b.operands[0]),
+            try resolveScalar(scope, b.operands[1]),
         } },
         .bezier => .{ .bezier = .{
-            (try resolveOperand(env, b.operands[0])).asPoint(),
-            (try resolveOperand(env, b.operands[1])).asPoint(),
-            (try resolveOperand(env, b.operands[2])).asPoint(),
-            (try resolveOperand(env, b.operands[3])).asPoint(),
+            (try resolveOperand(scope, b.operands[0])).asPoint(),
+            (try resolveOperand(scope, b.operands[1])).asPoint(),
+            (try resolveOperand(scope, b.operands[2])).asPoint(),
+            (try resolveOperand(scope, b.operands[3])).asPoint(),
         } },
         .line => .{ .line = .{
-            (try resolveOperand(env, b.operands[0])).asPoint(),
-            (try resolveOperand(env, b.operands[1])).asPoint(),
+            (try resolveOperand(scope, b.operands[0])).asPoint(),
+            (try resolveOperand(scope, b.operands[1])).asPoint(),
         } },
     };
+}
+
+/// Evaluate a single instruction RHS to a RuntimeValue.
+fn evalInst(ally: Allocator, scope: Scope, fn_map: FnMap, inst: Inst) EvalError!RuntimeValue {
+    return switch (inst.rhs) {
+        .constant => |v| .{ .scalar = normalizeToMm(v) },
+        .copy => |name| scope.get(name) orelse return error.UndefinedReference,
+        .builtin => |b| try evalBuiltin(scope, b),
+        .call => |c| try evalCall(ally, scope, fn_map, c),
+    };
+}
+
+/// Evaluate a user-defined function call by inlining: bind params to args,
+/// evaluate body instructions, return the `ret` value.
+fn evalCall(
+    ally: Allocator,
+    caller_scope: Scope,
+    fn_map: FnMap,
+    c: Inst.Call,
+) EvalError!RuntimeValue {
+    const fn_def = fn_map.get(c.func) orelse return error.UndefinedReference;
+
+    // Build a local environment with only params + body locals.
+    var fn_env = Env{};
+
+    for (fn_def.params, c.args) |param, arg| {
+        try fn_env.put(ally, param.name, try resolveOperand(caller_scope, arg));
+    }
+
+    // The function body sees its own locals first, then the caller's
+    // full scope chain (which includes inputs and outer bindings).
+    const fn_scope = Scope{ .bindings = &fn_env, .parent = &caller_scope };
+
+    for (fn_def.body) |inst| {
+        const value = try evalInst(ally, fn_scope, fn_map, inst);
+        try fn_env.put(ally, inst.name, value);
+    }
+
+    return fn_scope.get(fn_def.ret) orelse error.UndefinedReference;
 }
 
 /// Returns true if a binding name is a compiler-generated temporary.
@@ -792,4 +854,189 @@ test "eval: line with cm normalization" {
     try std.testing.expectEqual(@as(f64, 30.0), c.value.line[0][1]);
     try std.testing.expectEqual(@as(f64, 50.0), c.value.line[1][0]);
     try std.testing.expectEqual(@as(f64, 10.0), c.value.line[1][1]);
+}
+
+test "eval: fn call simple" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\fn double(%x : f64) -> f64
+        \\  %0 : f64 = mul %x 2
+        \\  ret %0
+        \\end
+        \\
+        \\%y : f64 = call double 5
+    );
+    defer result.deinit();
+
+    const y = findBinding(result.bindings, "y").?;
+    try std.testing.expectEqual(Type.f64, y.ty);
+    try std.testing.expectEqual(@as(f64, 10.0), y.value.asScalar());
+}
+
+test "eval: fn call with body" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\fn half(%x : length) -> length
+        \\  %result : length = div %x 2
+        \\  ret %result
+        \\end
+        \\
+        \\%y : length = call half 100mm
+    );
+    defer result.deinit();
+
+    const y = findBinding(result.bindings, "y").?;
+    try std.testing.expectEqual(Type.length, y.ty);
+    try std.testing.expectEqual(@as(f64, 50.0), y.value.asScalar());
+}
+
+test "eval: fn call with input ref" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\fn scale_head(%factor : f64) -> length
+        \\  %0 : length = mul %head %factor
+        \\  ret %0
+        \\end
+        \\
+        \\%y : length = call scale_head 2
+    );
+    defer result.deinit();
+
+    const y = findBinding(result.bindings, "y").?;
+    try std.testing.expectEqual(@as(f64, 200.0), y.value.asScalar());
+}
+
+test "eval: fn call with input override" {
+    const ally = std.testing.allocator;
+    var result = try evalSourceWithOverrides(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\fn scale_head(%factor : f64) -> length
+        \\  %0 : length = mul %head %factor
+        \\  ret %0
+        \\end
+        \\
+        \\%y : length = call scale_head 2
+    , &.{.{ .name = "head", .value = 150.0 }});
+    defer result.deinit();
+
+    const y = findBinding(result.bindings, "y").?;
+    try std.testing.expectEqual(@as(f64, 300.0), y.value.asScalar());
+}
+
+test "eval: fn call with ref arg" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\fn double(%x : f64) -> f64
+        \\  %0 : f64 = mul %x 2
+        \\  ret %0
+        \\end
+        \\
+        \\%a : f64 = 5
+        \\%y : f64 = call double %a
+    );
+    defer result.deinit();
+
+    const y = findBinding(result.bindings, "y").?;
+    try std.testing.expectEqual(@as(f64, 10.0), y.value.asScalar());
+}
+
+test "eval: fn call multiple params" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\fn add(%a : length, %b : length) -> length
+        \\  %0 : length = add %a %b
+        \\  ret %0
+        \\end
+        \\
+        \\%z : length = call add 10mm 20mm
+    );
+    defer result.deinit();
+
+    const z = findBinding(result.bindings, "z").?;
+    try std.testing.expectEqual(@as(f64, 30.0), z.value.asScalar());
+}
+
+test "eval: fn call no params" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\fn zero() -> f64
+        \\  %0 : f64 = 42
+        \\  ret %0
+        \\end
+        \\
+        \\%y : f64 = call zero
+    );
+    defer result.deinit();
+
+    const y = findBinding(result.bindings, "y").?;
+    try std.testing.expectEqual(@as(f64, 42.0), y.value.asScalar());
+}
+
+test "eval: fn returning point" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\fn origin() -> point
+        \\  %0 : point = point 0mm 0mm
+        \\  ret %0
+        \\end
+        \\
+        \\%p : point = call origin
+    );
+    defer result.deinit();
+
+    const p = findBinding(result.bindings, "p").?;
+    try std.testing.expectEqual(Type.point, p.ty);
+    try std.testing.expectEqual(@as(f64, 0.0), p.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 0.0), p.value.point[1]);
+}
+
+test "eval: plan key roundtrip test case" {
+    const ally = std.testing.allocator;
+    // The test case from the plan:
+    // input head = 100mm
+    // fn half_head(scale: f64) {
+    //   let result = head * scale / 2
+    //   return result
+    // }
+    // let x = half_head(1.0)
+    //
+    // Expected IR:
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %head : length = 100mm
+        \\
+        \\fn half_head(%scale : f64) -> length
+        \\  %0 : length = mul %head %scale
+        \\  %result : length = div %0 2
+        \\  ret %result
+        \\end
+        \\
+        \\%x : length = call half_head 1
+    );
+    defer result.deinit();
+
+    const x = findBinding(result.bindings, "x").?;
+    try std.testing.expectEqual(Type.length, x.ty);
+    // (100 * 1.0) / 2 = 50.0
+    try std.testing.expectEqual(@as(f64, 50.0), x.value.asScalar());
 }

@@ -101,26 +101,118 @@ const Lowerer = struct {
             .fn_call => {
                 return try self.lowerFnCall(node_index);
             },
-            .root, .let_statement, .input_statement => unreachable,
+            .root, .let_statement, .input_statement, .fn_def, .param, .return_stmt => unreachable,
         };
     }
 
-    /// Lower a function call expression (e.g. `point(x, y)`, `bezier(p1, p2, p3, p4)`).
+    /// Lower a function call expression (e.g. `point(x, y)`, `bezier(p1, p2, p3, p4)`,
+    /// or a user-defined function call).
     fn lowerFnCall(self: *Lowerer, node_index: ast.NodeIndex) LowerError!Operand {
         const node = self.tree.nodes.get(node_index);
         const fn_name = self.tree.tokenSlice(node.main_token);
         const args = self.tree.callArgs(node_index);
-
-        // Look up in the centralized builtin registry.
-        const sig = ir.builtin_sigs.get(fn_name) orelse
-            unreachable; // sema guarantees only valid builtins reach lowering
 
         // Lower each argument to an operand.
         const operands = try self.ally.alloc(Operand, args.len);
         for (args, 0..) |arg_idx, i| {
             operands[i] = try self.lowerExpr(arg_idx);
         }
-        return self.emitBuiltin(sig.op, operands, node_index);
+
+        // Check builtins first.
+        if (ir.builtin_sigs.get(fn_name)) |sig| {
+            return self.emitBuiltin(sig.op, operands, node_index);
+        }
+
+        // User-defined function call.
+        const ty = self.nodeType(node_index);
+        const name = try self.tempName();
+        try self.instructions.append(self.ally, .{
+            .name = name,
+            .ty = ty,
+            .rhs = .{ .call = .{
+                .func = try self.ally.dupe(u8, fn_name),
+                .args = operands,
+            } },
+        });
+        return .{ .ref = name };
+    }
+
+    /// Lower a function definition into an `ir.FnDef`.
+    fn lowerFnDef(self: *Lowerer, fn_def_index: ast.NodeIndex) LowerError!ir.FnDef {
+        const fn_node = self.tree.nodes.get(fn_def_index);
+        const fn_name_slice = self.tree.tokenSlice(fn_node.main_token + 1);
+        const fn_name = try self.ally.dupe(u8, fn_name_slice);
+
+        const param_nodes = self.tree.fnDefParams(fn_def_index);
+        const body_nodes = self.tree.fnDefBody(fn_def_index);
+        const return_expr = self.tree.fnDefReturn(fn_def_index);
+
+        // Build IR params from the sema function signature.
+        const fn_sig = self.sema_result.functions.get(fn_name_slice).?;
+        const params = try self.ally.alloc(ir.Param, param_nodes.len);
+        for (fn_sig.params, 0..) |param_info, i| {
+            params[i] = .{
+                .name = try self.ally.dupe(u8, param_info.name),
+                .ty = mapType(param_info.ty),
+            };
+        }
+
+        // Create a sub-lowerer for the function body. Only `instructions`
+        // and `temp_counter` are used; `inputs` is unused but required by
+        // the shared Lowerer struct (avoids a separate BodyLowerer type).
+        var sub = Lowerer{
+            .tree = self.tree,
+            .sema_result = self.sema_result,
+            .ally = self.ally,
+            .inputs = .{},
+            .instructions = .{},
+            .temp_counter = 0,
+        };
+
+        // Lower body let-statements using AST node types directly.
+        for (body_nodes) |stmt_idx| {
+            const stmt_node = self.tree.nodes.get(stmt_idx);
+            if (stmt_node.tag == .let_statement) {
+                const name = self.tree.tokenSlice(stmt_node.main_token + 1);
+                const sema_ty = self.sema_result.node_types[stmt_node.data.lhs];
+                const sym = sema.Symbol{
+                    .ty = sema_ty,
+                    .node = stmt_idx,
+                    .kind = .let_binding,
+                };
+                try sub.lowerLet(name, sym);
+            }
+        }
+
+        // Lower the return expression.
+        const ret_operand = try sub.lowerExpr(return_expr);
+
+        // Determine the return binding name.
+        const ret_name = switch (ret_operand) {
+            .ref => |r| try self.ally.dupe(u8, r),
+            .literal => |v| blk: {
+                // Need to emit a constant instruction for the literal.
+                const ret_ty = self.nodeType(return_expr);
+                const tmp = try sub.tempName();
+                try sub.instructions.append(self.ally, .{
+                    .name = tmp,
+                    .ty = ret_ty,
+                    .rhs = .{ .constant = v },
+                });
+                break :blk tmp;
+            },
+        };
+
+        // Infer return type.
+        const ret_ty = mapType(self.sema_result.node_types[return_expr]);
+
+        return .{
+            .name = fn_name,
+            .params = params,
+            .ret_ty = ret_ty,
+            .body = try sub.instructions.toOwnedSlice(self.ally),
+            .ret = ret_name,
+        };
     }
 
     /// Lower a let binding. Delegates to `lowerExpr` for all node types,
@@ -199,19 +291,35 @@ pub fn lower(gpa: std.mem.Allocator, tree: *const Ast, sema_result: *const Sema)
         .temp_counter = 0,
     };
 
-    const keys = sema_result.symbols.keys();
-    const values = sema_result.symbols.values();
+    var fn_defs = std.ArrayListUnmanaged(ir.FnDef){};
 
-    for (keys, values) |name, sym| {
-        switch (sym.kind) {
-            .input => try l.lowerInput(name, sym),
-            .let_binding => try l.lowerLet(name, sym),
+    // Iterate root AST statements in order to preserve topo-sort.
+    const statements = tree.rootStatements(0);
+    for (statements) |stmt_index| {
+        const node = tree.nodes.get(stmt_index);
+        switch (node.tag) {
+            .input_statement => {
+                const name = tree.tokenSlice(node.main_token + 1);
+                const sym = sema_result.symbols.get(name).?;
+                try l.lowerInput(name, sym);
+            },
+            .let_statement => {
+                const name = tree.tokenSlice(node.main_token + 1);
+                const sym = sema_result.symbols.get(name).?;
+                try l.lowerLet(name, sym);
+            },
+            .fn_def => {
+                const fn_def = try l.lowerFnDef(stmt_index);
+                try fn_defs.append(ally, fn_def);
+            },
+            else => {},
         }
     }
 
     return .{
         .version = 1,
         .inputs = try l.inputs.toOwnedSlice(ally),
+        .functions = try fn_defs.toOwnedSlice(ally),
         .instructions = try l.instructions.toOwnedSlice(ally),
         .arena = arena,
     };
@@ -720,4 +828,126 @@ test "lower: line with expression args" {
     const inst = result.instructions[4];
     try std.testing.expectEqualStrings("c", inst.name);
     try std.testing.expectEqual(Type.line, inst.ty);
+}
+
+test "lower: fn_def simple" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "fn double(x: f64) { return x * 2 }");
+    defer result.deinit();
+
+    try std.testing.expectEqual(0, result.instructions.len);
+    try std.testing.expectEqual(1, result.functions.len);
+
+    const fn_def = result.functions[0];
+    try std.testing.expectEqualStrings("double", fn_def.name);
+    try std.testing.expectEqual(Type.f64, fn_def.ret_ty);
+    try std.testing.expectEqual(1, fn_def.params.len);
+    try std.testing.expectEqualStrings("x", fn_def.params[0].name);
+    try std.testing.expectEqual(Type.f64, fn_def.params[0].ty);
+
+    // Body: %0 : f64 = mul %x 2, ret = "0"
+    try std.testing.expectEqual(1, fn_def.body.len);
+    switch (fn_def.body[0].rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.mul, b.op);
+            try std.testing.expectEqualStrings("x", b.operands[0].ref);
+            try std.testing.expectEqual(@as(f64, 2.0), b.operands[1].literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqualStrings("0", fn_def.ret);
+}
+
+test "lower: fn_def with body" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn half(x: length) {
+        \\  let result = x / 2
+        \\  return result
+        \\}
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.functions.len);
+    const fn_def = result.functions[0];
+    try std.testing.expectEqualStrings("half", fn_def.name);
+    try std.testing.expectEqual(Type.length, fn_def.ret_ty);
+
+    // Body: %result : length = div %x 2, ret = "result"
+    try std.testing.expectEqual(1, fn_def.body.len);
+    try std.testing.expectEqualStrings("result", fn_def.body[0].name);
+    try std.testing.expectEqualStrings("result", fn_def.ret);
+}
+
+test "lower: fn call user-defined" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn double(x: f64) { return x * 2 }
+        \\let y = double(5)
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.functions.len);
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    const inst = result.instructions[0];
+    try std.testing.expectEqualStrings("y", inst.name);
+    try std.testing.expectEqual(Type.f64, inst.ty);
+
+    switch (inst.rhs) {
+        .call => |c| {
+            try std.testing.expectEqualStrings("double", c.func);
+            try std.testing.expectEqual(1, c.args.len);
+            try std.testing.expectEqual(@as(f64, 5.0), c.args[0].literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: fn def with input ref and call" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\input head = 100mm
+        \\fn scale_head(factor: f64) { return head * factor }
+        \\let y = scale_head(2)
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.inputs.len);
+    try std.testing.expectEqual(1, result.functions.len);
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    const fn_def = result.functions[0];
+    try std.testing.expectEqualStrings("scale_head", fn_def.name);
+    try std.testing.expectEqual(Type.length, fn_def.ret_ty);
+
+    switch (result.instructions[0].rhs) {
+        .call => |c| {
+            try std.testing.expectEqualStrings("scale_head", c.func);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: fn_def return literal" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "fn zero() { return 42 }");
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.functions.len);
+    const fn_def = result.functions[0];
+    try std.testing.expectEqualStrings("zero", fn_def.name);
+    try std.testing.expectEqual(Type.f64, fn_def.ret_ty);
+    try std.testing.expectEqual(0, fn_def.params.len);
+
+    // Should have a body instruction for the literal.
+    try std.testing.expectEqual(1, fn_def.body.len);
+    switch (fn_def.body[0].rhs) {
+        .constant => |v| try std.testing.expectEqual(@as(f64, 42.0), v.number),
+        else => return error.TestUnexpectedResult,
+    }
+    try std.testing.expectEqualStrings(fn_def.ret, fn_def.body[0].name);
 }

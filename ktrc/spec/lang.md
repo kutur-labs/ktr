@@ -433,12 +433,13 @@ The compiler currently implements the following subset:
 - [x] `input` declarations with literal defaults (`input head = 100mm`)
 - [x] Runtime input overrides (parametric evaluation)
 - [x] `point`, `bezier`, `line` constructor types with full pipeline support
+- [x] `fn` definitions with typed parameters
+- [x] Function calls (user-defined and built-in constructors)
 
 Planned (not yet implemented):
 
 - [ ] `input` assertion blocks (`assert head > 0mm`)
-- [ ] `fn` definitions with typed parameters
-- [ ] Function calls (user-defined)
+- [ ] Unary negation (`-expr`)
 - [ ] Method calls (`.up()`, `.dx()`, etc.)
 - [ ] `search` solver blocks
 - [ ] `export` statements

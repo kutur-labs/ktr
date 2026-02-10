@@ -1,7 +1,8 @@
 ---
 import MainLayout from "../layouts/main-layout.astro";
-import sourceKtr from "./source.ktr?raw";
-const defaultCode = sourceKtr;
+import tshirtKtr from "./tshirt.ktr?raw";
+import petalKtr from "./petal.ktr?raw";
+const sources = { tshirt: tshirtKtr, petal: petalKtr };
 ---
 
 <MainLayout headerBorder>
@@ -17,20 +18,18 @@ const defaultCode = sourceKtr;
           class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
         >
           <div class="flex items-center gap-1.5">
-            <svg
-              class="size-2 md:size-2.5"
-              viewBox="0 0 1178 1178"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
-                fill="currentColor"
-                class="text-primary"></path>
-            </svg>
-            <span class="text-xs font-mono text-primary-muted-foreground"
-              >source.ktr</span
-            >
+            <div class="flex items-center gap-4">
+              <button
+                id="tab-tshirt"
+                class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary"
+                >T-shirt</button
+              >
+              <button
+                id="tab-petal"
+                class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50"
+                >Petal</button
+              >
+            </div>
           </div>
           <span
             id="status-compile"
@@ -49,19 +48,8 @@ const defaultCode = sourceKtr;
           class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
         >
           <div class="flex items-center gap-1.5">
-            <svg
-              class="size-2 md:size-2.5"
-              viewBox="0 0 1178 1178"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
-                fill="currentColor"
-                class="text-primary"></path>
-            </svg>
-            <span class="text-xs font-mono text-primary-muted-foreground"
-              >input</span
+            <span class="text-[10px] font-mono text-primary-muted-foreground"
+              >Input</span
             >
             <button
               id="toggle-animate"
@@ -69,7 +57,7 @@ const defaultCode = sourceKtr;
               title="Play/pause animation"
               ><svg
                 id="icon-pause"
-                class="size-2"
+                class="size-2 hidden"
                 viewBox="0 0 16 16"
                 fill="currentColor"
                 xmlns="http://www.w3.org/2000/svg"
@@ -81,7 +69,7 @@ const defaultCode = sourceKtr;
                   rx="1"></rect></svg
               ><svg
                 id="icon-play"
-                class="size-2 hidden"
+                class="size-2"
                 viewBox="0 0 16 16"
                 fill="currentColor"
                 xmlns="http://www.w3.org/2000/svg"
@@ -132,19 +120,8 @@ const defaultCode = sourceKtr;
           class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
         >
           <div class="flex items-center gap-1.5">
-            <svg
-              class="size-2 md:size-2.5"
-              viewBox="0 0 1178 1178"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
-                fill="currentColor"
-                class="text-primary"></path>
-            </svg>
-            <span class="text-xs font-mono text-primary-muted-foreground"
-              >source.ktrir</span
+            <span class="text-[10px] font-mono text-primary-muted-foreground"
+              >IR</span
             >
           </div>
           <span
@@ -161,19 +138,8 @@ const defaultCode = sourceKtr;
           class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
         >
           <div class="flex items-center gap-1.5">
-            <svg
-              class="size-2 md:size-2.5"
-              viewBox="0 0 1178 1178"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M764.413 584.377H593.231V413.196L1006.43 0H1177.61V171.181L764.413 584.377ZM171.181 1177.61H0V1006.43L413.196 593.231H584.377V764.412L171.181 1177.61ZM823.44 1177.61H593.231V593.231H1177.61V823.44H823.44V1177.61Z"
-                fill="currentColor"
-                class="text-primary"></path>
-            </svg>
-            <span class="text-xs font-mono text-primary-muted-foreground"
-              >output</span
+            <span class="text-[10px] font-mono text-primary-muted-foreground"
+              >Output</span
             >
             <button
               id="download-svg"
@@ -193,16 +159,16 @@ const defaultCode = sourceKtr;
               ></button
             >
           </div>
-          <div class="flex items-center gap-0.5">
+          <div class="flex items-center gap-4">
             <button
               id="toggle-visual"
-              class="px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary"
-              >visual</button
+              class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary"
+              >Visual</button
             >
             <button
               id="toggle-text"
-              class="px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50"
-              >text</button
+              class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50"
+              >Text</button
             >
           </div>
         </div>
@@ -238,7 +204,7 @@ const defaultCode = sourceKtr;
 <script
   id="default-code"
   type="application/json"
-  set:html={JSON.stringify(defaultCode)}
+  set:html={JSON.stringify(sources)}
 />
 
 <style is:global>
@@ -475,7 +441,7 @@ const defaultCode = sourceKtr;
       tokenizer: {
         root: [
           [/#.*$/, "comment"],
-          [/\binput\b/, "keyword"],
+          [/\b(input|fn|end|ret|call)\b/, "keyword"],
           [/%[a-zA-Z_]\w*/, "variable"],
           [/%\d+/, "variable"],
           [/\b(length|percentage|f64|point|bezier|line|bool)\b/, "type"],
@@ -483,6 +449,7 @@ const defaultCode = sourceKtr;
           [/\b\d+(\.\d+)?(mm|cm)\b/, "number.unit"],
           [/\b\d+\.\d+\b/, "number.float"],
           [/\b\d+\b/, "number"],
+          [/->/, "operator"],
           [/:/, "delimiter"],
           [/=/, "operator"],
         ],
@@ -583,9 +550,12 @@ const defaultCode = sourceKtr;
 
     // ── Read default code ──────────────────────────────────────────────────────
 
-    var defaultCode = JSON.parse(
+    var sources = JSON.parse(
       document.getElementById("default-code").textContent,
     );
+    var currentTab = "tshirt";
+    var tabContents = { tshirt: sources.tshirt, petal: sources.petal };
+    var defaultCode = tabContents[currentTab];
 
     // ── Shared editor options ──────────────────────────────────────────────────
 
@@ -656,6 +626,57 @@ const defaultCode = sourceKtr;
       attributeFilter: ["class"],
     });
 
+    // ── Source tabs ─────────────────────────────────────────────────────────
+
+    var tabTshirtBtn = document.getElementById("tab-tshirt");
+    var tabPetalBtn = document.getElementById("tab-petal");
+
+    function setActiveTab(tab) {
+      if (tab === currentTab) return;
+
+      // Save current editor content for the current tab.
+      tabContents[currentTab] = inputEditor.getValue();
+
+      // Stop animation when switching.
+      if (animating) stopAnimation();
+
+      currentTab = tab;
+
+      // Update button styles.
+      var activeClass =
+        "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
+      var inactiveClass =
+        "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
+      tabTshirtBtn.className = tab === "tshirt" ? activeClass : inactiveClass;
+      tabPetalBtn.className = tab === "petal" ? activeClass : inactiveClass;
+
+      // Load the tab's content into the editor and recompile.
+      updating = true;
+      inputEditor.setValue(tabContents[tab]);
+      updating = false;
+
+      // Reset state for the new tab.
+      currentOverrides = {};
+      lastCompiledIr = "";
+      hideError();
+      hideInputs();
+      hideResults();
+      clearMarkers(inputEditor);
+      runCompile();
+
+      // Auto-animate petal, not tshirt.
+      if (tab === "petal") {
+        startAnimation();
+      }
+    }
+
+    tabTshirtBtn.addEventListener("click", function () {
+      setActiveTab("tshirt");
+    });
+    tabPetalBtn.addEventListener("click", function () {
+      setActiveTab("petal");
+    });
+
     // ── Bidirectional compile / decompile wiring ──────────────────────────────
 
     var statusCompile = document.getElementById("status-compile");
@@ -687,16 +708,16 @@ const defaultCode = sourceKtr;
         visualOutput.classList.remove("hidden");
         textOutput.classList.add("hidden");
         toggleVisualBtn.className =
-          "px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
         toggleTextBtn.className =
-          "px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
       } else {
         visualOutput.classList.add("hidden");
         textOutput.classList.remove("hidden");
         toggleVisualBtn.className =
-          "px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
         toggleTextBtn.className =
-          "px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
       }
       if (lastBindings) showResults(lastBindings);
     }

@@ -23,11 +23,22 @@ pub const Type = enum {
 
 pub const Symbol = struct {
     ty: Type,
-    /// AST node index of the defining statement (let_statement or input_statement).
+    /// AST node index of the defining statement (let_statement, input_statement, or fn_def for params).
     node: ast.NodeIndex,
     kind: Kind,
 
-    pub const Kind = enum { let_binding, input };
+    pub const Kind = enum { let_binding, input, fn_param };
+};
+
+pub const ParamInfo = struct {
+    name: []const u8,
+    ty: Type,
+};
+
+pub const FnSig = struct {
+    params: []const ParamInfo,
+    ret_ty: Type,
+    node: ast.NodeIndex,
 };
 
 /// Result of semantic analysis. Symbol names are slices borrowed from the
@@ -37,6 +48,8 @@ pub const Sema = struct {
     /// Ordered map of bindings in source order. The lowerer depends on
     /// iteration order matching definition order.
     symbols: std.StringArrayHashMap(Symbol),
+    /// User-defined function signatures, keyed by function name.
+    functions: std.StringArrayHashMap(FnSig),
     /// Resolved type for each AST node, indexed by NodeIndex.
     /// Only expression nodes have meaningful values; other slots are undefined.
     node_types: []Type,
@@ -50,6 +63,10 @@ pub const Sema = struct {
 
     pub fn deinit(self: *Sema) void {
         self.symbols.deinit();
+        for (self.functions.values()) |sig| {
+            self.allocator.free(sig.params);
+        }
+        self.functions.deinit();
         self.allocator.free(self.node_types);
         self.allocator.free(self.diagnostics);
         self.* = undefined;
@@ -60,11 +77,42 @@ const Analyzer = struct {
     tree: *const Ast,
     allocator: std.mem.Allocator,
     symbols: std.StringArrayHashMap(Symbol),
+    functions: std.StringArrayHashMap(FnSig),
     node_types: []Type,
     diagnostics: std.ArrayList(Diagnostic),
 
     fn addDiag(self: *Analyzer, tag: Diagnostic.Tag, token: u32) std.mem.Allocator.Error!void {
         try self.diagnostics.append(self.allocator, .{ .tag = tag, .token = token });
+    }
+
+    /// Check if `name` exists in the local portion of the symbol table
+    /// (entries at index >= `scope_start`). Used by function analysis to
+    /// allow params/locals to shadow outer-scope bindings.
+    fn containsLocal(self: *const Analyzer, name: []const u8, scope_start: usize) bool {
+        const keys = self.symbols.keys();
+        for (keys[scope_start..]) |k| {
+            if (std.mem.eql(u8, k, name)) return true;
+        }
+        return false;
+    }
+
+    const SavedEntry = struct { name: []const u8, sym: Symbol };
+
+    /// Put a symbol, saving the previous outer-scope value if it would be
+    /// overwritten. The saved entries are restored after function analysis.
+    fn saveAndPut(
+        self: *Analyzer,
+        name: []const u8,
+        sym: Symbol,
+        outer_count: usize,
+        saved: *std.ArrayList(SavedEntry),
+    ) std.mem.Allocator.Error!void {
+        if (self.symbols.getIndex(name)) |idx| {
+            if (idx < outer_count) {
+                try saved.append(self.allocator, .{ .name = name, .sym = self.symbols.values()[idx] });
+            }
+        }
+        try self.symbols.put(name, sym);
     }
 
     fn analyzeRoot(self: *Analyzer) std.mem.Allocator.Error!void {
@@ -74,9 +122,98 @@ const Analyzer = struct {
             switch (node.tag) {
                 .let_statement => try self.analyzeBinding(node, stmt_index, .let_binding),
                 .input_statement => try self.analyzeBinding(node, stmt_index, .input),
+                .fn_def => try self.analyzeFnDef(node, stmt_index),
                 else => {},
             }
         }
+    }
+
+    /// Parse a type name token text into a sema Type.
+    fn parseTypeName(text: []const u8) ?Type {
+        const type_map = std.StaticStringMap(Type).initComptime(.{
+            .{ "f64", .f64 },
+            .{ "length", .length },
+            .{ "percentage", .percentage },
+            .{ "point", .point },
+            .{ "bezier", .bezier },
+            .{ "line", .line },
+        });
+        return type_map.get(text);
+    }
+
+    fn analyzeFnDef(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex) std.mem.Allocator.Error!void {
+        const fn_name = self.tree.tokenSlice(node.main_token + 1);
+
+        // Check for duplicate name (against bindings and other functions).
+        if (self.symbols.contains(fn_name) or self.functions.contains(fn_name)) {
+            try self.addDiag(.duplicate_function, node.main_token);
+            return;
+        }
+
+        const param_nodes = self.tree.fnDefParams(node_index);
+        const body_nodes = self.tree.fnDefBody(node_index);
+        const return_expr = self.tree.fnDefReturn(node_index);
+
+        // Build param info and add params to symbol table temporarily.
+        var params = try self.allocator.alloc(ParamInfo, param_nodes.len);
+        const outer_count = self.symbols.count();
+
+        // Track outer-scope entries that get overwritten by shadowing,
+        // so we can restore them after analyzing the function body.
+        var saved = std.ArrayList(SavedEntry).empty;
+        defer saved.deinit(self.allocator);
+
+        for (param_nodes, 0..) |param_idx, i| {
+            const param_node = self.tree.nodes.get(param_idx);
+            const param_name = self.tree.tokenSlice(param_node.main_token);
+            const type_text = self.tree.tokenSlice(@intCast(param_node.data.lhs));
+            const param_ty = parseTypeName(type_text) orelse {
+                try self.addDiag(.expected_type_name, @intCast(param_node.data.lhs));
+                // Use poison to continue analysis.
+                params[i] = .{ .name = param_name, .ty = .poison };
+                continue;
+            };
+
+            params[i] = .{ .name = param_name, .ty = param_ty };
+
+            // Check for duplicate within this function's scope only.
+            // Params are allowed to shadow outer bindings.
+            if (self.containsLocal(param_name, outer_count)) {
+                try self.addDiag(.duplicate_binding, param_node.main_token);
+                continue;
+            }
+
+            // Save any outer-scope entry being shadowed.
+            try self.saveAndPut(param_name, .{ .ty = param_ty, .node = param_idx, .kind = .fn_param }, outer_count, &saved);
+        }
+
+        // Analyze body let-statements.
+        for (body_nodes) |stmt_idx| {
+            const stmt_node = self.tree.nodes.get(stmt_idx);
+            if (stmt_node.tag == .let_statement) {
+                try self.analyzeFnBinding(stmt_node, stmt_idx, outer_count, &saved);
+            }
+        }
+
+        // Analyze return expression and infer return type.
+        const ret_ty = try self.resolveType(return_expr);
+
+        // Pop entries that were appended (new names not in outer scope).
+        while (self.symbols.count() > outer_count) {
+            _ = self.symbols.pop();
+        }
+
+        // Restore outer-scope entries that were overwritten by shadowing.
+        for (saved.items) |entry| {
+            try self.symbols.put(entry.name, entry.sym);
+        }
+
+        // Register the function signature.
+        try self.functions.put(fn_name, .{
+            .params = params,
+            .ret_ty = ret_ty,
+            .node = node_index,
+        });
     }
 
     fn analyzeBinding(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex, kind: Symbol.Kind) std.mem.Allocator.Error!void {
@@ -90,6 +227,22 @@ const Analyzer = struct {
         const ty = try self.resolveType(node.data.lhs);
 
         try self.symbols.put(name, .{ .ty = ty, .node = node_index, .kind = kind });
+    }
+
+    /// Like `analyzeBinding`, but only checks for duplicates within the
+    /// function's local scope (entries at index >= `scope_start`). This
+    /// allows function-local bindings to shadow outer-scope names.
+    fn analyzeFnBinding(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex, scope_start: usize, saved: *std.ArrayList(SavedEntry)) std.mem.Allocator.Error!void {
+        const name = self.tree.tokenSlice(node.main_token + 1);
+
+        if (self.containsLocal(name, scope_start)) {
+            try self.addDiag(.duplicate_binding, node.main_token);
+            return;
+        }
+
+        const ty = try self.resolveType(node.data.lhs);
+
+        try self.saveAndPut(name, .{ .ty = ty, .node = node_index, .kind = .let_binding }, scope_start, saved);
     }
 
     fn resolveType(self: *Analyzer, node_index: ast.NodeIndex) std.mem.Allocator.Error!Type {
@@ -116,9 +269,9 @@ const Analyzer = struct {
             },
             .fn_call => try self.resolveCallType(node_index),
             // Structurally impossible: the parser only produces expression nodes
-            // as values in statements; root, let_statement and input_statement
-            // never appear here.
-            .root, .let_statement, .input_statement => unreachable,
+            // as values in statements; root, let_statement, input_statement,
+            // fn_def, param, and return_stmt never appear here.
+            .root, .let_statement, .input_statement, .fn_def, .param, .return_stmt => unreachable,
         };
         self.node_types[node_index] = ty;
         return ty;
@@ -129,34 +282,59 @@ const Analyzer = struct {
         const name = self.tree.tokenSlice(node.main_token);
         const args = self.tree.callArgs(node_index);
 
-        // Look up in the centralized builtin registry (ir.zig).
-        const sig = ir.builtin_sigs.get(name) orelse {
-            try self.addDiag(.unknown_function, node.main_token);
-            return .poison;
-        };
+        // Look up in the centralized builtin registry (ir.zig) first.
+        if (ir.builtin_sigs.get(name)) |sig| {
+            // Check argument count.
+            if (args.len != sig.params.len) {
+                try self.addDiag(.wrong_argument_count, node.main_token);
+                return .poison;
+            }
 
-        // Check argument count.
-        if (args.len != sig.params.len) {
-            try self.addDiag(.wrong_argument_count, node.main_token);
-            return .poison;
+            // Check each argument type.
+            var has_poison = false;
+            for (args, sig.params) |arg_idx, expected_ir_ty| {
+                const actual_ty = try self.resolveType(arg_idx);
+                if (actual_ty == .poison) {
+                    has_poison = true;
+                    continue;
+                }
+                const expected_ty = mapFromIrType(expected_ir_ty);
+                if (actual_ty != expected_ty) {
+                    try self.addDiag(.argument_type_mismatch, self.tree.nodes.items(.main_token)[arg_idx]);
+                }
+            }
+
+            if (has_poison) return .poison;
+            return mapFromIrType(sig.ret);
         }
 
-        // Check each argument type.
-        var has_poison = false;
-        for (args, sig.params) |arg_idx, expected_ir_ty| {
-            const actual_ty = try self.resolveType(arg_idx);
-            if (actual_ty == .poison) {
-                has_poison = true;
-                continue;
+        // Check user-defined functions.
+        if (self.functions.get(name)) |fn_sig| {
+            // Check argument count.
+            if (args.len != fn_sig.params.len) {
+                try self.addDiag(.wrong_argument_count, node.main_token);
+                return .poison;
             }
-            const expected_ty = mapFromIrType(expected_ir_ty);
-            if (actual_ty != expected_ty) {
-                try self.addDiag(.argument_type_mismatch, self.tree.nodes.items(.main_token)[arg_idx]);
+
+            // Check each argument type.
+            var has_poison = false;
+            for (args, fn_sig.params) |arg_idx, param_info| {
+                const actual_ty = try self.resolveType(arg_idx);
+                if (actual_ty == .poison) {
+                    has_poison = true;
+                    continue;
+                }
+                if (actual_ty != param_info.ty) {
+                    try self.addDiag(.argument_type_mismatch, self.tree.nodes.items(.main_token)[arg_idx]);
+                }
             }
+
+            if (has_poison) return .poison;
+            return fn_sig.ret_ty;
         }
 
-        if (has_poison) return .poison;
-        return mapFromIrType(sig.ret);
+        try self.addDiag(.unknown_function, node.main_token);
+        return .poison;
     }
 
     /// Map an ir.Type to a sema.Type. The IR type enum is a subset of the
@@ -207,16 +385,19 @@ pub fn analyze(allocator: std.mem.Allocator, tree: *const Ast) std.mem.Allocator
         .tree = tree,
         .allocator = allocator,
         .symbols = std.StringArrayHashMap(Symbol).init(allocator),
+        .functions = std.StringArrayHashMap(FnSig).init(allocator),
         .node_types = node_types,
         .diagnostics = std.ArrayList(Diagnostic).empty,
     };
     errdefer a.symbols.deinit();
+    errdefer a.functions.deinit();
     errdefer a.diagnostics.deinit(allocator);
 
     try a.analyzeRoot();
 
     return .{
         .symbols = a.symbols,
+        .functions = a.functions,
         .node_types = a.node_types,
         .diagnostics = try a.diagnostics.toOwnedSlice(allocator),
         .allocator = allocator,
@@ -863,4 +1044,278 @@ test "analyze: line in arithmetic is type mismatch" {
 
     try std.testing.expect(sem.hasErrors());
     try std.testing.expectEqual(.type_mismatch, sem.diagnostics[0].tag);
+}
+
+test "analyze: fn_def simple" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "fn double(x: f64) { return x * 2 }";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(1, sem.functions.count());
+    const sig = sem.functions.get("double").?;
+    try std.testing.expectEqual(.f64, sig.ret_ty);
+    try std.testing.expectEqual(1, sig.params.len);
+    try std.testing.expectEqualStrings("x", sig.params[0].name);
+    try std.testing.expectEqual(.f64, sig.params[0].ty);
+}
+
+test "analyze: fn_def with length params" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "fn add(a: length, b: length) { return a + b }";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    const sig = sem.functions.get("add").?;
+    try std.testing.expectEqual(.length, sig.ret_ty);
+    try std.testing.expectEqual(2, sig.params.len);
+}
+
+test "analyze: fn_def with body" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn half(x: length) {
+        \\  let result = x / 2
+        \\  return result
+        \\}
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    const sig = sem.functions.get("half").?;
+    try std.testing.expectEqual(.length, sig.ret_ty);
+}
+
+test "analyze: fn_def params don't leak into outer scope" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn double(x: f64) { return x * 2 }
+        \\let y = x
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
+}
+
+test "analyze: fn_def body locals don't leak" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn foo(x: f64) {
+        \\  let temp = x * 2
+        \\  return temp
+        \\}
+        \\let y = temp
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
+}
+
+test "analyze: fn call user-defined" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn double(x: f64) { return x * 2 }
+        \\let y = double(5)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.f64, sem.symbols.get("y").?.ty);
+}
+
+test "analyze: fn call wrong arg count" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn double(x: f64) { return x * 2 }
+        \\let y = double(1, 2)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.wrong_argument_count, sem.diagnostics[0].tag);
+}
+
+test "analyze: fn call wrong arg type" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn half(x: length) { return x / 2 }
+        \\let y = half(42)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.argument_type_mismatch, sem.diagnostics[0].tag);
+}
+
+test "analyze: duplicate function name" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn foo(x: f64) { return x }
+        \\fn foo(y: f64) { return y }
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.duplicate_function, sem.diagnostics[0].tag);
+}
+
+test "analyze: fn name conflicts with binding" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let foo = 42
+        \\fn foo(x: f64) { return x }
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.duplicate_function, sem.diagnostics[0].tag);
+}
+
+test "analyze: fn references outer input" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\input head = 100mm
+        \\fn scale_head(factor: f64) { return head * factor }
+        \\let y = scale_head(2)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.length, sem.functions.get("scale_head").?.ret_ty);
+    try std.testing.expectEqual(.length, sem.symbols.get("y").?.ty);
+}
+
+test "analyze: fn returns point" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn origin() { return point(0mm, 0mm) }
+        \\let p = origin()
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.point, sem.functions.get("origin").?.ret_ty);
+    try std.testing.expectEqual(.point, sem.symbols.get("p").?.ty);
+}
+
+test "analyze: fn param shadows outer binding" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\input head = 100mm
+        \\fn scale(head: f64) { return head * 2 }
+        \\let y = scale(3)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    // Param `head` shadows the outer input -- no error.
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.f64, sem.functions.get("scale").?.ret_ty);
+    try std.testing.expectEqual(.f64, sem.symbols.get("y").?.ty);
+}
+
+test "analyze: fn body local shadows outer binding" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let x = 100mm
+        \\fn foo(a: f64) {
+        \\  let x = a * 2
+        \\  return x
+        \\}
+        \\let y = foo(3)
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    // Body local `x` shadows the outer let -- no error.
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.f64, sem.functions.get("foo").?.ret_ty);
+    try std.testing.expectEqual(.f64, sem.symbols.get("y").?.ty);
+}
+
+test "analyze: fn duplicate param within function" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn foo(x: f64, x: f64) { return x }
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    // Duplicate param within the same function is still an error.
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.duplicate_binding, sem.diagnostics[0].tag);
 }

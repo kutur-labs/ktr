@@ -20,6 +20,12 @@ pub const Diagnostic = struct {
         expected_r_paren,
         unexpected_token,
 
+        expected_l_brace,
+        expected_r_brace,
+        expected_colon,
+        expected_type_name,
+        expected_return,
+
         // ------------------------------
         // Semantic Analysis
         // ------------------------------
@@ -30,6 +36,7 @@ pub const Diagnostic = struct {
         unknown_function,
         wrong_argument_count,
         argument_type_mismatch,
+        duplicate_function,
 
         pub fn message(self: Tag) []const u8 {
             return switch (self) {
@@ -39,12 +46,18 @@ pub const Diagnostic = struct {
                 .expected_literal => "expected literal value (e.g. 100mm, 50%, 42)",
                 .expected_r_paren => "expected ')'",
                 .unexpected_token => "unexpected token",
+                .expected_l_brace => "expected '{'",
+                .expected_r_brace => "expected '}'",
+                .expected_colon => "expected ':'",
+                .expected_type_name => "expected type name",
+                .expected_return => "expected 'return'",
                 .duplicate_binding => "duplicate binding",
                 .undefined_reference => "undefined reference",
                 .type_mismatch => "type mismatch in arithmetic expression",
                 .unknown_function => "unknown function",
                 .wrong_argument_count => "wrong number of arguments",
                 .argument_type_mismatch => "argument type mismatch",
+                .duplicate_function => "duplicate function name",
             };
         }
     };
@@ -82,6 +95,24 @@ pub const Node = struct {
         /// main_token: `input` token (name = main_token + 1).
         /// lhs: default value expression node index. rhs: unused (0).
         input_statement,
+
+        /// `fn <name>(<params>) { <body> return <expr> }`.
+        /// main_token: `fn` token (name = main_token + 1).
+        /// lhs: start index into extra_data. rhs: end index (exclusive).
+        /// extra_data[lhs..rhs] layout:
+        ///   [param_count, param_node_0, ..., param_node_N-1,
+        ///    body_stmt_0, ..., body_stmt_M-1, return_expr_node]
+        fn_def,
+
+        /// Typed parameter: `name : type`.
+        /// main_token: identifier (param name).
+        /// lhs: token index of type_name. rhs: unused (0).
+        param,
+
+        /// `return <expr>`.
+        /// main_token: `return` token.
+        /// lhs: expression node index. rhs: unused (0).
+        return_stmt,
 
         // ------------------------------
         // Expressions
@@ -173,6 +204,31 @@ pub const Ast = struct {
     pub fn callArgs(self: Ast, call_index: NodeIndex) []const NodeIndex {
         const data = self.nodes.items(.data)[call_index];
         return self.extra_data[data.lhs..data.rhs];
+    }
+
+    /// Returns the param node indices for a `fn_def` node.
+    pub fn fnDefParams(self: Ast, fn_def_index: NodeIndex) []const NodeIndex {
+        const data = self.nodes.items(.data)[fn_def_index];
+        const extra = self.extra_data[data.lhs..data.rhs];
+        const param_count = extra[0];
+        return extra[1 .. 1 + param_count];
+    }
+
+    /// Returns the body let-statement node indices for a `fn_def` node.
+    pub fn fnDefBody(self: Ast, fn_def_index: NodeIndex) []const NodeIndex {
+        const data = self.nodes.items(.data)[fn_def_index];
+        const extra = self.extra_data[data.lhs..data.rhs];
+        const param_count = extra[0];
+        // Layout: [param_count, params..., body_stmts..., return_expr]
+        // body_stmts = extra[1 + param_count .. extra.len - 1]
+        return extra[1 + param_count .. extra.len - 1];
+    }
+
+    /// Returns the return expression node index for a `fn_def` node.
+    pub fn fnDefReturn(self: Ast, fn_def_index: NodeIndex) NodeIndex {
+        const data = self.nodes.items(.data)[fn_def_index];
+        const extra = self.extra_data[data.lhs..data.rhs];
+        return extra[extra.len - 1];
     }
 
     pub fn deinit(self: *Ast) void {

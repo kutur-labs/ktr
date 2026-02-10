@@ -220,10 +220,95 @@ const Parser = struct {
         });
     }
 
+    /// Parse a single typed parameter: `IDENT : type_name`.
+    fn parseParam(self: *Parser) Error!ast.NodeIndex {
+        const name_token = try self.expect(.identifier, .expected_identifier);
+        _ = try self.expect(.colon, .expected_colon);
+
+        // The type name is an identifier token whose text must match a known type.
+        if (self.currentTag() != .identifier) {
+            try self.addDiag(.expected_type_name);
+            return error.ParseFailed;
+        }
+        const type_token = self.cursor;
+        self.advance();
+
+        return self.addNode(.{
+            .tag = .param,
+            .main_token = name_token,
+            .data = .{ .lhs = type_token, .rhs = 0 },
+        });
+    }
+
+    /// Parse a function definition: `fn IDENT ( [param_list] ) { fn_body }`.
+    /// fn_body = { let_statement } return expression.
+    fn parseFnDef(self: *Parser) Error!ast.NodeIndex {
+        const fn_token = self.cursor;
+        self.advance(); // consume 'fn'
+        _ = try self.expect(.identifier, .expected_identifier);
+        _ = try self.expect(.l_paren, .expected_r_paren); // reusing r_paren diag for lparen is ok for now
+
+        // Collect fn_def content into a temporary buffer to avoid interleaving
+        // with extra_data from nested expressions.
+        var fn_extra = std.ArrayList(u32).empty;
+        defer fn_extra.deinit(self.allocator);
+
+        // Reserve slot for param_count.
+        try fn_extra.append(self.allocator, 0);
+
+        // Parse comma-separated parameter list.
+        var param_count: u32 = 0;
+        if (self.currentTag() != .r_paren) {
+            const first_param = try self.parseParam();
+            try fn_extra.append(self.allocator, first_param);
+            param_count += 1;
+
+            while (self.currentTag() == .comma) {
+                self.advance(); // consume ','
+                const p = try self.parseParam();
+                try fn_extra.append(self.allocator, p);
+                param_count += 1;
+            }
+        }
+        fn_extra.items[0] = param_count;
+
+        _ = try self.expect(.r_paren, .expected_r_paren);
+        _ = try self.expect(.l_brace, .expected_l_brace);
+
+        // Parse body: zero or more let statements followed by a return statement.
+        while (self.currentTag() == .let) {
+            const let_stmt = try self.parseLetStatement();
+            try fn_extra.append(self.allocator, let_stmt);
+        }
+
+        // Expect return statement.
+        if (self.currentTag() != .@"return") {
+            try self.addDiag(.expected_return);
+            return error.ParseFailed;
+        }
+        self.advance(); // consume 'return'
+        const return_expr = try self.parseExpression();
+        try fn_extra.append(self.allocator, return_expr);
+
+        _ = try self.expect(.r_brace, .expected_r_brace);
+
+        // Write collected extra data.
+        const start_extra = self.extra_data.items.len;
+        try self.extra_data.appendSlice(self.allocator, fn_extra.items);
+        const end_extra = self.extra_data.items.len;
+
+        return self.addNode(.{
+            .tag = .fn_def,
+            .main_token = fn_token,
+            .data = .{ .lhs = @intCast(start_extra), .rhs = @intCast(end_extra) },
+        });
+    }
+
     fn parseStatement(self: *Parser) Error!ast.NodeIndex {
         return switch (self.currentTag()) {
             .let => self.parseLetStatement(),
             .input => self.parseInputStatement(),
+            .@"fn" => self.parseFnDef(),
             else => {
                 try self.addDiag(.unexpected_token);
                 return error.ParseFailed;
@@ -235,7 +320,7 @@ const Parser = struct {
     fn synchronize(self: *Parser) void {
         while (self.currentTag() != .eof) {
             const tag = self.currentTag();
-            if (tag == .let or tag == .input) return;
+            if (tag == .let or tag == .input or tag == .@"fn") return;
             self.advance();
         }
     }
@@ -657,4 +742,137 @@ test "parse: fn_call missing closing paren" {
 
     try std.testing.expect(tree.hasErrors());
     try std.testing.expectEqual(.expected_r_paren, tree.diagnostics[0].tag);
+}
+
+test "parse: fn_def simple" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "fn foo(x: f64) { return x }";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(1, statements.len);
+
+    const fn_node = tree.nodes.get(statements[0]);
+    try std.testing.expectEqual(.fn_def, fn_node.tag);
+    try std.testing.expectEqualStrings("foo", tree.tokenSlice(fn_node.main_token + 1));
+
+    const params = tree.fnDefParams(statements[0]);
+    try std.testing.expectEqual(1, params.len);
+
+    const param_node = tree.nodes.get(params[0]);
+    try std.testing.expectEqual(.param, param_node.tag);
+    try std.testing.expectEqualStrings("x", tree.tokenSlice(param_node.main_token));
+    try std.testing.expectEqualStrings("f64", tree.tokenSlice(@intCast(param_node.data.lhs)));
+
+    const body = tree.fnDefBody(statements[0]);
+    try std.testing.expectEqual(0, body.len);
+
+    const ret_node = tree.nodes.get(tree.fnDefReturn(statements[0]));
+    try std.testing.expectEqual(.identifier_ref, ret_node.tag);
+    try std.testing.expectEqualStrings("x", tree.tokenSlice(ret_node.main_token));
+}
+
+test "parse: fn_def with body" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn double(a: length) {
+        \\  let result = a * 2
+        \\  return result
+        \\}
+    ;
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(1, statements.len);
+
+    const params = tree.fnDefParams(statements[0]);
+    try std.testing.expectEqual(1, params.len);
+
+    const body = tree.fnDefBody(statements[0]);
+    try std.testing.expectEqual(1, body.len);
+    try std.testing.expectEqual(.let_statement, tree.nodes.get(body[0]).tag);
+
+    const ret_expr = tree.fnDefReturn(statements[0]);
+    try std.testing.expectEqual(.identifier_ref, tree.nodes.get(ret_expr).tag);
+}
+
+test "parse: fn_def multiple params" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "fn add(a: length, b: length) { return a + b }";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+
+    const params = tree.fnDefParams(statements[0]);
+    try std.testing.expectEqual(2, params.len);
+
+    const p0 = tree.nodes.get(params[0]);
+    try std.testing.expectEqualStrings("a", tree.tokenSlice(p0.main_token));
+    try std.testing.expectEqualStrings("length", tree.tokenSlice(@intCast(p0.data.lhs)));
+
+    const p1 = tree.nodes.get(params[1]);
+    try std.testing.expectEqualStrings("b", tree.tokenSlice(p1.main_token));
+    try std.testing.expectEqualStrings("length", tree.tokenSlice(@intCast(p1.data.lhs)));
+
+    const ret_expr = tree.fnDefReturn(statements[0]);
+    try std.testing.expectEqual(.add, tree.nodes.get(ret_expr).tag);
+}
+
+test "parse: fn_def no params" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "fn zero() { return 42 }";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+
+    const params = tree.fnDefParams(statements[0]);
+    try std.testing.expectEqual(0, params.len);
+
+    const ret_expr = tree.fnDefReturn(statements[0]);
+    try std.testing.expectEqual(.number_literal, tree.nodes.get(ret_expr).tag);
+}
+
+test "parse: fn_def missing return" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "fn foo(x: f64) { let y = x }";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(tree.hasErrors());
+    // Should hit expected_return after the let binding when it sees '}'
+    var found_return_error = false;
+    for (tree.diagnostics) |diag| {
+        if (diag.tag == .expected_return) found_return_error = true;
+    }
+    try std.testing.expect(found_return_error);
+}
+
+test "parse: fn_def and let coexist" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn double(x: f64) { return x * 2 }
+        \\let y = double(5)
+    ;
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(2, statements.len);
+    try std.testing.expectEqual(.fn_def, tree.nodes.get(statements[0]).tag);
+    try std.testing.expectEqual(.let_statement, tree.nodes.get(statements[1]).tag);
 }

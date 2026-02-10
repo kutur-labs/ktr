@@ -52,6 +52,15 @@ fn buildUseCounts(allocator: std.mem.Allocator, instructions: []const Inst) !std
                     }
                 }
             },
+            .call => |c| {
+                for (c.args) |arg| {
+                    if (arg == .ref) {
+                        const entry = try counts.getOrPut(arg.ref);
+                        if (!entry.found_existing) entry.value_ptr.* = 0;
+                        entry.value_ptr.* += 1;
+                    }
+                }
+            },
             .constant => {},
         }
     }
@@ -136,6 +145,17 @@ const Decompiler = struct {
         }
     }
 
+    /// Write a user-defined function call inline: `func_name(arg1, arg2, ...)`.
+    fn writeCallInline(self: *const Decompiler, writer: anytype, c: Inst.Call) @TypeOf(writer).Error!void {
+        try writer.writeAll(c.func);
+        try writer.writeByte('(');
+        for (c.args, 0..) |arg, i| {
+            if (i > 0) try writer.writeAll(", ");
+            try self.writeExpr(writer, arg, null, false);
+        }
+        try writer.writeByte(')');
+    }
+
     /// Write an operand in ktr source form, potentially inlining single-use temps.
     fn writeExpr(self: *const Decompiler, writer: anytype, operand: Operand, parent_op: ?Op, is_rhs: bool) !void {
         switch (operand) {
@@ -157,6 +177,10 @@ const Decompiler = struct {
                                 try writer.writeAll(copy_name);
                                 return;
                             },
+                            .call => |c| {
+                                try self.writeCallInline(writer, c);
+                                return;
+                            },
                         }
                     }
                 }
@@ -165,6 +189,31 @@ const Decompiler = struct {
         }
     }
 };
+
+/// Map an IR type to its ktr source name.
+fn irTypeToKtrName(ty: Type) []const u8 {
+    return ty.toStr();
+}
+
+/// Write instructions as ktr let-bindings using a decompiler for temp inlining.
+fn writeInstructions(dc: *const Decompiler, instructions: []const Inst, writer: anytype, first: *bool) !void {
+    for (instructions) |inst| {
+        // Skip single-use temps -- they will be inlined.
+        if (dc.isSingleUseTemp(inst.name)) continue;
+
+        if (!first.*) try writer.writeByte('\n');
+        first.* = false;
+
+        try writer.print("let {s} = ", .{inst.name});
+
+        switch (inst.rhs) {
+            .constant => |v| try writeKtrValue(writer, v, inst.ty),
+            .copy => |name| try writer.writeAll(name),
+            .builtin => |b| try dc.writeBuiltinInline(writer, b, null, false),
+            .call => |c| try dc.writeCallInline(writer, c),
+        }
+    }
+}
 
 /// Reconstruct `.ktr` source from an `Ir`.
 ///
@@ -186,24 +235,70 @@ pub fn decompile(allocator: std.mem.Allocator, ir_data: Ir, writer: anytype) !vo
         try writeKtrValue(writer, input.default, input.ty);
     }
 
-    for (ir_data.instructions) |inst| {
-        // Skip single-use temps -- they will be inlined.
-        if (dc.isSingleUseTemp(inst.name)) continue;
-
+    // Emit function definitions.
+    for (ir_data.functions) |fn_def| {
         if (!first) try writer.writeByte('\n');
         first = false;
 
-        try writer.print("let {s} = ", .{inst.name});
-
-        switch (inst.rhs) {
-            .constant => |v| try writeKtrValue(writer, v, inst.ty),
-            .copy => |name| try writer.writeAll(name),
-            .builtin => |b| try dc.writeBuiltinInline(writer, b, null, false),
+        // fn name(param1: type, param2: type) {
+        try writer.print("fn {s}(", .{fn_def.name});
+        for (fn_def.params, 0..) |param, i| {
+            if (i > 0) try writer.writeAll(", ");
+            try writer.print("{s}: {s}", .{ param.name, irTypeToKtrName(param.ty) });
         }
+        try writer.writeAll(") {");
+
+        // Build a scoped decompiler for the function body.
+        var fn_dc = try Decompiler.init(allocator, fn_def.body);
+        defer fn_dc.deinit();
+
+        // Determine if the ret binding should be inlined into the return expression.
+        // Only inline if it's a compiler-generated temp.
+        const inline_ret = ir.isTemp(fn_def.ret);
+
+        // Body let-statements.
+        for (fn_def.body) |body_inst| {
+            if (fn_dc.isSingleUseTemp(body_inst.name)) continue;
+
+            // Skip the return binding if we're going to inline it.
+            if (inline_ret and std.mem.eql(u8, body_inst.name, fn_def.ret)) continue;
+
+            try writer.print("\n  let {s} = ", .{body_inst.name});
+            switch (body_inst.rhs) {
+                .constant => |v| try writeKtrValue(writer, v, body_inst.ty),
+                .copy => |name| try writer.writeAll(name),
+                .builtin => |b| try fn_dc.writeBuiltinInline(writer, b, null, false),
+                .call => |c| try fn_dc.writeCallInline(writer, c),
+            }
+        }
+
+        // return expression.
+        try writer.writeAll("\n  return ");
+        if (inline_ret) {
+            // Inline the return instruction's expression.
+            if (fn_dc.inst_map.get(fn_def.ret)) |ret_inst| {
+                switch (ret_inst.rhs) {
+                    .constant => |v| try writeKtrValue(writer, v, ret_inst.ty),
+                    .copy => |name| try writer.writeAll(name),
+                    .builtin => |b| try fn_dc.writeBuiltinInline(writer, b, null, false),
+                    .call => |c| try fn_dc.writeCallInline(writer, c),
+                }
+            } else {
+                try writer.writeAll(fn_def.ret);
+            }
+        } else {
+            // Named binding -- just reference it.
+            try writer.writeAll(fn_def.ret);
+        }
+
+        try writer.writeAll("\n}");
     }
 
+    try writeInstructions(&dc, ir_data.instructions, writer, &first);
+
     // Trailing newline if there was any output.
-    if (ir_data.inputs.len > 0 or ir_data.instructions.len > 0) {
+    const has_content = ir_data.inputs.len > 0 or ir_data.functions.len > 0 or ir_data.instructions.len > 0;
+    if (has_content) {
         try writer.writeByte('\n');
     }
 }
@@ -755,5 +850,46 @@ test "decompile roundtrip: line with expression args" {
         \\let a = point(0mm, 0mm)
         \\let b = point(100mm, 50mm)
         \\let c = line(a, b)
+    );
+}
+
+test "decompile roundtrip: fn_def simple" {
+    try expectDecompileRoundtrip("fn double(x: f64) { return x * 2 }");
+}
+
+test "decompile roundtrip: fn_def with body" {
+    try expectDecompileRoundtrip(
+        \\fn half(x: length) {
+        \\  let result = x / 2
+        \\  return result
+        \\}
+    );
+}
+
+test "decompile roundtrip: fn_def and call" {
+    try expectDecompileRoundtrip(
+        \\fn double(x: f64) { return x * 2 }
+        \\let y = double(5)
+    );
+}
+
+test "decompile roundtrip: fn with input ref and call" {
+    try expectDecompileRoundtrip(
+        \\input head = 100mm
+        \\fn scale_head(factor: f64) { return head * factor }
+        \\let y = scale_head(2)
+    );
+}
+
+test "decompile roundtrip: fn returning literal" {
+    try expectDecompileRoundtrip("fn zero() { return 42 }");
+}
+
+test "decompile roundtrip: fn multiple params" {
+    try expectDecompileRoundtrip(
+        \\fn add(a: length, b: length) { return a + b }
+        \\input x = 10mm
+        \\input y = 20mm
+        \\let z = add(x, y)
     );
 }

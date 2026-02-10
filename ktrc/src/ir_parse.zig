@@ -82,6 +82,127 @@ fn parseDeclLhs(ally: std.mem.Allocator, text: []const u8) Error!DeclLhs {
     };
 }
 
+/// Try to parse a `call` RHS: `call func_name operand operand ...`.
+/// Returns null if the first token is not `call`.
+fn parseCallRhs(ally: std.mem.Allocator, text: []const u8) Error!?Inst.Rhs {
+    if (!std.mem.startsWith(u8, text, "call ")) return null;
+    const rest = skipWs(text["call ".len..]);
+
+    // Next token is the function name (not %-prefixed).
+    const first_space = std.mem.indexOfScalar(u8, rest, ' ');
+    const func_name = if (first_space) |idx| rest[0..idx] else rest;
+    if (func_name.len == 0) return error.InvalidFormat;
+
+    var args = std.ArrayListUnmanaged(Operand){};
+    if (first_space) |idx| {
+        var tokens = std.mem.tokenizeScalar(u8, rest[idx + 1 ..], ' ');
+        while (tokens.next()) |token| {
+            try args.append(ally, try parseOperand(ally, token));
+        }
+    }
+
+    return .{ .call = .{
+        .func = try ally.dupe(u8, func_name),
+        .args = try args.toOwnedSlice(ally),
+    } };
+}
+
+/// Parse a full RHS from text. Handles copy (%ref), call, builtin op, and literal constant.
+fn parseRhs(ally: std.mem.Allocator, rhs_text: []const u8) Error!Inst.Rhs {
+    if (rhs_text.len > 0 and rhs_text[0] == '%') {
+        return .{ .copy = try parseName(ally, rhs_text) };
+    }
+    // Try call first (since "call" is not a builtin op).
+    if (try parseCallRhs(ally, rhs_text)) |call_rhs| {
+        return call_rhs;
+    }
+    // Try to parse as builtin op: first token is the op keyword.
+    if (try parseBuiltinRhs(ally, rhs_text)) |builtin_rhs| {
+        return builtin_rhs;
+    }
+    // Fall back to literal constant.
+    return .{ .constant = Value.parse(rhs_text) catch return error.InvalidFormat };
+}
+
+/// Parse a `fn` block from the line iterator.
+/// The `sig_line` is the first line (e.g. `fn name(%p : type) -> ret_type`).
+fn parseFnBlock(ally: std.mem.Allocator, sig_line: []const u8, iter: *std.mem.SplitIterator(u8, .scalar)) Error!ir.FnDef {
+    // Parse signature: `fn name(%p1 : type, %p2 : type) -> ret_type`
+    const after_fn = skipWs(sig_line["fn ".len..]);
+
+    // Split at '(' to get name.
+    const paren_idx = std.mem.indexOfScalar(u8, after_fn, '(') orelse return error.InvalidFormat;
+    const fn_name = std.mem.trimRight(u8, after_fn[0..paren_idx], " \t");
+    if (fn_name.len == 0) return error.InvalidFormat;
+
+    // Find matching ')' and then '-> type'
+    const close_paren_idx = std.mem.indexOfScalar(u8, after_fn, ')') orelse return error.InvalidFormat;
+    const params_text = after_fn[paren_idx + 1 .. close_paren_idx];
+
+    // Parse parameters.
+    var params = std.ArrayListUnmanaged(ir.Param){};
+    if (std.mem.trim(u8, params_text, " \t").len > 0) {
+        var param_iter = std.mem.splitSequence(u8, params_text, ",");
+        while (param_iter.next()) |param_text| {
+            const trimmed = std.mem.trim(u8, param_text, " \t");
+            if (trimmed.len == 0) continue;
+
+            // Format: %name : type
+            const colon_split = splitOnce(trimmed, ':') orelse return error.InvalidFormat;
+            const ref_text = std.mem.trimRight(u8, colon_split[0], " \t");
+            const type_text = std.mem.trim(u8, colon_split[1], " \t");
+
+            try params.append(ally, .{
+                .name = try parseName(ally, ref_text),
+                .ty = Type.fromStr(type_text) orelse return error.InvalidFormat,
+            });
+        }
+    }
+
+    // Parse return type: `-> type`
+    const arrow_rest = after_fn[close_paren_idx + 1 ..];
+    const arrow_pos = std.mem.indexOf(u8, arrow_rest, "->") orelse return error.InvalidFormat;
+    const ret_type_text = std.mem.trim(u8, arrow_rest[arrow_pos + 2 ..], " \t");
+    const ret_ty = Type.fromStr(ret_type_text) orelse return error.InvalidFormat;
+
+    // Parse body lines until `ret` or `end`.
+    var body_insts = std.ArrayListUnmanaged(Inst){};
+    var ret_name: ?[]const u8 = null;
+
+    while (iter.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+
+        // Check for `end`.
+        if (std.mem.eql(u8, line, "end")) break;
+
+        // Check for `ret %name`.
+        if (std.mem.startsWith(u8, line, "ret ")) {
+            const ref = std.mem.trim(u8, line["ret ".len..], " \t");
+            ret_name = try parseName(ally, ref);
+            continue;
+        }
+
+        // Body instruction line: `%name : type = rhs`
+        const lhs = try parseDeclLhs(ally, line);
+        const rhs = try parseRhs(ally, lhs.rhs_text);
+
+        try body_insts.append(ally, .{
+            .name = lhs.name,
+            .ty = lhs.ty,
+            .rhs = rhs,
+        });
+    }
+
+    return .{
+        .name = try ally.dupe(u8, fn_name),
+        .params = try params.toOwnedSlice(ally),
+        .ret_ty = ret_ty,
+        .body = try body_insts.toOwnedSlice(ally),
+        .ret = ret_name orelse return error.InvalidFormat,
+    };
+}
+
 /// Parse `.ktrir` text into an `Ir`.
 ///
 /// The returned `Ir` owns all its memory via an arena; call `Ir.deinit()`
@@ -92,6 +213,7 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
     const ally = arena.allocator();
 
     var inputs: std.ArrayListUnmanaged(Input) = .{};
+    var functions: std.ArrayListUnmanaged(ir.FnDef) = .{};
     var instructions: std.ArrayListUnmanaged(Inst) = .{};
     var version: u32 = 1;
     var header_seen = false;
@@ -132,21 +254,16 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
             continue;
         }
 
+        // Function definition: `fn name(...) -> type`
+        if (std.mem.startsWith(u8, line, "fn ")) {
+            const fn_def = try parseFnBlock(ally, line, &iter);
+            try functions.append(ally, fn_def);
+            continue;
+        }
+
         // Instruction line: `%<name> : <type> = <rhs>`
         const lhs = try parseDeclLhs(ally, line);
-
-        // Parse RHS: `%name` (copy), `op operand operand` (builtin), or literal (constant).
-        const rhs: Inst.Rhs = blk: {
-            if (lhs.rhs_text.len > 0 and lhs.rhs_text[0] == '%') {
-                break :blk .{ .copy = try parseName(ally, lhs.rhs_text) };
-            }
-            // Try to parse as builtin op: first token is the op keyword.
-            if (try parseBuiltinRhs(ally, lhs.rhs_text)) |builtin_rhs| {
-                break :blk builtin_rhs;
-            }
-            // Fall back to literal constant.
-            break :blk .{ .constant = Value.parse(lhs.rhs_text) catch return error.InvalidFormat };
-        };
+        const rhs = try parseRhs(ally, lhs.rhs_text);
 
         try instructions.append(ally, .{
             .name = lhs.name,
@@ -158,6 +275,7 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
     return .{
         .version = version,
         .inputs = try inputs.toOwnedSlice(ally),
+        .functions = try functions.toOwnedSlice(ally),
         .instructions = try instructions.toOwnedSlice(ally),
         .arena = arena,
     };
@@ -516,6 +634,155 @@ test "parse: line instruction with 2 operands" {
             try std.testing.expect(b.operands[1] == .ref);
             try std.testing.expectEqualStrings("b", b.operands[1].ref);
         },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: fn_def simple" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\fn double(%x : f64) -> f64
+        \\  %0 : f64 = mul %x 2
+        \\  ret %0
+        \\end
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(0, result.instructions.len);
+    try std.testing.expectEqual(1, result.functions.len);
+
+    const fn_def = result.functions[0];
+    try std.testing.expectEqualStrings("double", fn_def.name);
+    try std.testing.expectEqual(Type.f64, fn_def.ret_ty);
+    try std.testing.expectEqual(1, fn_def.params.len);
+    try std.testing.expectEqualStrings("x", fn_def.params[0].name);
+    try std.testing.expectEqual(Type.f64, fn_def.params[0].ty);
+
+    try std.testing.expectEqual(1, fn_def.body.len);
+    try std.testing.expectEqualStrings("0", fn_def.body[0].name);
+    try std.testing.expectEqualStrings("0", fn_def.ret);
+}
+
+test "parse: fn_def with multiple params" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\fn add(%a : length, %b : length) -> length
+        \\  %0 : length = add %a %b
+        \\  ret %0
+        \\end
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.functions.len);
+    const fn_def = result.functions[0];
+    try std.testing.expectEqual(2, fn_def.params.len);
+    try std.testing.expectEqualStrings("a", fn_def.params[0].name);
+    try std.testing.expectEqualStrings("b", fn_def.params[1].name);
+    try std.testing.expectEqual(Type.length, fn_def.ret_ty);
+}
+
+test "parse: fn_def no params" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\fn zero() -> f64
+        \\  %0 : f64 = 42
+        \\  ret %0
+        \\end
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.functions.len);
+    const fn_def = result.functions[0];
+    try std.testing.expectEqualStrings("zero", fn_def.name);
+    try std.testing.expectEqual(0, fn_def.params.len);
+    try std.testing.expectEqual(Type.f64, fn_def.ret_ty);
+}
+
+test "parse: call instruction" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\%y : f64 = call double 5
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.instructions.len);
+    const inst = result.instructions[0];
+    try std.testing.expectEqualStrings("y", inst.name);
+    try std.testing.expectEqual(Type.f64, inst.ty);
+
+    switch (inst.rhs) {
+        .call => |c| {
+            try std.testing.expectEqualStrings("double", c.func);
+            try std.testing.expectEqual(1, c.args.len);
+            try std.testing.expectEqual(@as(f64, 5.0), c.args[0].literal.number);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: call instruction with ref args" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\%a : f64 = 5
+        \\%y : f64 = call double %a
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.instructions.len);
+    const inst = result.instructions[1];
+
+    switch (inst.rhs) {
+        .call => |c| {
+            try std.testing.expectEqualStrings("double", c.func);
+            try std.testing.expectEqual(1, c.args.len);
+            try std.testing.expectEqualStrings("a", c.args[0].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: fn_def with body and call" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\fn double(%x : f64) -> f64
+        \\  %0 : f64 = mul %x 2
+        \\  ret %0
+        \\end
+        \\
+        \\%y : f64 = call double 5
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(1, result.functions.len);
+    try std.testing.expectEqual(1, result.instructions.len);
+
+    try std.testing.expectEqualStrings("double", result.functions[0].name);
+    switch (result.instructions[0].rhs) {
+        .call => |c| try std.testing.expectEqualStrings("double", c.func),
         else => return error.TestUnexpectedResult,
     }
 }

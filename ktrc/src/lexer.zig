@@ -15,6 +15,10 @@ pub const Token = struct {
         let,
         /// `input`
         input,
+        /// `fn`
+        @"fn",
+        /// `return`
+        @"return",
 
         // ------------------------------
         // Identifiers
@@ -56,6 +60,12 @@ pub const Token = struct {
         comma,
         /// `.`
         dot,
+        /// `{`
+        l_brace,
+        /// `}`
+        r_brace,
+        /// `:`
+        colon,
 
         // ------------------------------
         // Special
@@ -101,6 +111,8 @@ pub const Lexer = struct {
     const keywords = std.StaticStringMap(Token.Tag).initComptime(.{
         .{ "let", .let },
         .{ "input", .input },
+        .{ "fn", .@"fn" },
+        .{ "return", .@"return" },
     });
 
     fn readIdentifier(self: *Lexer) Token {
@@ -162,6 +174,9 @@ pub const Lexer = struct {
             ')' => .r_paren,
             ',' => .comma,
             '.' => .dot,
+            '{' => .l_brace,
+            '}' => .r_brace,
+            ':' => .colon,
             else => null,
         };
         if (single_char_tag) |tag| {
@@ -395,4 +410,64 @@ test "lexer: dot does not interfere with decimal numbers" {
     try std.testing.expectEqual(num.tag, .number_literal);
     try std.testing.expectEqualStrings(lex.lexeme(num), "3.14");
     try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: fn keyword" {
+    var lex = Lexer.init("fn foo");
+
+    try std.testing.expectEqual(lex.next().tag, .@"fn");
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: return keyword" {
+    var lex = Lexer.init("return x");
+
+    try std.testing.expectEqual(lex.next().tag, .@"return");
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: braces" {
+    var lex = Lexer.init("{ }");
+
+    try std.testing.expectEqual(lex.next().tag, .l_brace);
+    try std.testing.expectEqual(lex.next().tag, .r_brace);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: colon" {
+    var lex = Lexer.init("x : f64");
+
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .colon);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: fn definition syntax" {
+    var lex = Lexer.init("fn foo(x: f64) { return x }");
+
+    try std.testing.expectEqual(lex.next().tag, .@"fn");
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .l_paren);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .colon);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .r_paren);
+    try std.testing.expectEqual(lex.next().tag, .l_brace);
+    try std.testing.expectEqual(lex.next().tag, .@"return");
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .r_brace);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: fn as identifier prefix" {
+    var lex = Lexer.init("let fn_name = 5");
+
+    try std.testing.expectEqual(lex.next().tag, .let);
+
+    const ident = lex.next();
+    try std.testing.expectEqual(ident.tag, .identifier);
+    try std.testing.expectEqualStrings(lex.lexeme(ident), "fn_name");
 }

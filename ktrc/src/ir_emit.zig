@@ -23,11 +23,37 @@ fn writeOperand(writer: anytype, operand: Operand) !void {
     }
 }
 
+/// Emit a single instruction in `.ktrir` format.
+fn emitInst(writer: anytype, inst: Inst) !void {
+    try writer.print("%{s} : {s} = ", .{ inst.name, inst.ty.toStr() });
+
+    switch (inst.rhs) {
+        .constant => |v| try writeValue(writer, v),
+        .copy => |name| try writer.print("%{s}", .{name}),
+        .builtin => |b| {
+            try writer.writeAll(b.op.toStr());
+            for (b.operands) |operand| {
+                try writer.writeByte(' ');
+                try writeOperand(writer, operand);
+            }
+        },
+        .call => |c| {
+            try writer.print("call {s}", .{c.func});
+            for (c.args) |arg| {
+                try writer.writeByte(' ');
+                try writeOperand(writer, arg);
+            }
+        },
+    }
+    try writer.writeByte('\n');
+}
+
 /// Serialize an `Ir` to the canonical `.ktrir` text format.
 pub fn emit(ir_data: Ir, writer: anytype) !void {
     try writer.print("# ktr-ir v{d}\n", .{ir_data.version});
 
-    if (ir_data.inputs.len > 0 or ir_data.instructions.len > 0) {
+    const has_content = ir_data.inputs.len > 0 or ir_data.functions.len > 0 or ir_data.instructions.len > 0;
+    if (has_content) {
         try writer.writeByte('\n');
     }
 
@@ -37,25 +63,36 @@ pub fn emit(ir_data: Ir, writer: anytype) !void {
         try writer.writeByte('\n');
     }
 
-    if (ir_data.inputs.len > 0 and ir_data.instructions.len > 0) {
+    if (ir_data.inputs.len > 0 and (ir_data.functions.len > 0 or ir_data.instructions.len > 0)) {
         try writer.writeByte('\n');
     }
 
-    for (ir_data.instructions) |inst| {
-        try writer.print("%{s} : {s} = ", .{ inst.name, inst.ty.toStr() });
-
-        switch (inst.rhs) {
-            .constant => |v| try writeValue(writer, v),
-            .copy => |name| try writer.print("%{s}", .{name}),
-            .builtin => |b| {
-                try writer.writeAll(b.op.toStr());
-                for (b.operands) |operand| {
-                    try writer.writeByte(' ');
-                    try writeOperand(writer, operand);
-                }
-            },
+    for (ir_data.functions, 0..) |fn_def, fi| {
+        // fn name(%p1 : type, %p2 : type) -> ret_type
+        try writer.print("fn {s}(", .{fn_def.name});
+        for (fn_def.params, 0..) |param, i| {
+            if (i > 0) try writer.writeAll(", ");
+            try writer.print("%{s} : {s}", .{ param.name, param.ty.toStr() });
         }
-        try writer.writeByte('\n');
+        try writer.print(") -> {s}\n", .{fn_def.ret_ty.toStr()});
+
+        // Body instructions (indented with two spaces).
+        for (fn_def.body) |body_inst| {
+            try writer.writeAll("  ");
+            try emitInst(writer, body_inst);
+        }
+
+        // ret %return_name
+        try writer.print("  ret %{s}\n", .{fn_def.ret});
+        try writer.writeAll("end\n");
+
+        if (fi + 1 < ir_data.functions.len or ir_data.instructions.len > 0) {
+            try writer.writeByte('\n');
+        }
+    }
+
+    for (ir_data.instructions) |inst| {
+        try emitInst(writer, inst);
     }
 }
 
@@ -500,5 +537,58 @@ test "roundtrip: line emit then parse" {
         \\let a = point(0mm, 0mm)
         \\let b = point(100mm, 50mm)
         \\let c = line(a, b)
+    );
+}
+
+test "emit: fn_def" {
+    const allocator = std.testing.allocator;
+    try expectEmitRoundtrip("fn double(x: f64) { return x * 2 }");
+    _ = allocator;
+}
+
+test "emit: fn_def and call" {
+    try expectEmitRoundtrip(
+        \\fn double(x: f64) { return x * 2 }
+        \\let y = double(5)
+    );
+}
+
+test "emit: fn_def with body and call" {
+    try expectEmitRoundtrip(
+        \\fn half(x: length) {
+        \\  let result = x / 2
+        \\  return result
+        \\}
+        \\input head = 100mm
+        \\let y = half(head)
+    );
+}
+
+test "roundtrip: fn with input ref" {
+    try expectEmitRoundtrip(
+        \\input head = 100mm
+        \\fn scale_head(factor: f64) { return head * factor }
+        \\let y = scale_head(2)
+    );
+}
+
+test "roundtrip: fn returning literal" {
+    try expectEmitRoundtrip("fn zero() { return 42 }");
+}
+
+test "roundtrip: fn multiple params" {
+    try expectEmitRoundtrip(
+        \\fn add(a: length, b: length) { return a + b }
+        \\input x = 10mm
+        \\input y = 20mm
+        \\let z = add(x, y)
+    );
+}
+
+test "roundtrip: fn param shadows outer binding" {
+    try expectEmitRoundtrip(
+        \\input head = 100mm
+        \\fn scale(head: f64) { return head * 2 }
+        \\let y = scale(3)
     );
 }

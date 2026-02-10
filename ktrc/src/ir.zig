@@ -119,6 +119,38 @@ pub const Operand = union(enum) {
     }
 };
 
+pub const Param = struct {
+    name: []const u8,
+    ty: Type,
+
+    pub fn eql(a: Param, b: Param) bool {
+        return std.mem.eql(u8, a.name, b.name) and a.ty == b.ty;
+    }
+};
+
+pub const FnDef = struct {
+    name: []const u8,
+    params: []const Param,
+    ret_ty: Type,
+    body: []const Inst,
+    ret: []const u8,
+
+    pub fn eql(a: FnDef, b: FnDef) bool {
+        if (!std.mem.eql(u8, a.name, b.name)) return false;
+        if (a.ret_ty != b.ret_ty) return false;
+        if (!std.mem.eql(u8, a.ret, b.ret)) return false;
+        if (a.params.len != b.params.len) return false;
+        for (a.params, b.params) |ap, bp| {
+            if (!ap.eql(bp)) return false;
+        }
+        if (a.body.len != b.body.len) return false;
+        for (a.body, b.body) |ai, bi| {
+            if (!ai.eql(bi)) return false;
+        }
+        return true;
+    }
+};
+
 pub const Input = struct {
     name: []const u8,
     ty: Type,
@@ -139,6 +171,11 @@ pub const Inst = struct {
         operands: []const Operand,
     };
 
+    pub const Call = struct {
+        func: []const u8,
+        args: []const Operand,
+    };
+
     pub const Rhs = union(enum) {
         /// Direct constant value: `%x : length = 100mm`.
         constant: Value,
@@ -146,6 +183,8 @@ pub const Inst = struct {
         copy: []const u8,
         /// Builtin operation: `%z : length = mul %x 2`.
         builtin: Builtin,
+        /// User-defined function call: `%z : bezier = call func_name %a 2`.
+        call: Call,
 
         pub fn eql(a: Rhs, b: Rhs) bool {
             if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
@@ -157,6 +196,14 @@ pub const Inst = struct {
                     if (ab.operands.len != b.builtin.operands.len) return false;
                     for (ab.operands, b.builtin.operands) |a_op, b_op| {
                         if (!a_op.eql(b_op)) return false;
+                    }
+                    return true;
+                },
+                .call => |ac| {
+                    if (!std.mem.eql(u8, ac.func, b.call.func)) return false;
+                    if (ac.args.len != b.call.args.len) return false;
+                    for (ac.args, b.call.args) |a_arg, b_arg| {
+                        if (!a_arg.eql(b_arg)) return false;
                     }
                     return true;
                 },
@@ -174,6 +221,7 @@ pub const Inst = struct {
 pub const Ir = struct {
     version: u32 = 1,
     inputs: []const Input = &.{},
+    functions: []const FnDef = &.{},
     instructions: []const Inst,
     arena: std.heap.ArenaAllocator,
 
@@ -188,6 +236,10 @@ pub const Ir = struct {
         if (a.inputs.len != b.inputs.len) return false;
         for (a.inputs, b.inputs) |ai, bi| {
             if (!ai.eql(bi)) return false;
+        }
+        if (a.functions.len != b.functions.len) return false;
+        for (a.functions, b.functions) |af, bf| {
+            if (!af.eql(bf)) return false;
         }
         if (a.instructions.len != b.instructions.len) return false;
         for (a.instructions, b.instructions) |ai, bi| {
