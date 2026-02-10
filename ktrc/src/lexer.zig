@@ -99,8 +99,18 @@ pub const Lexer = struct {
     }
 
     fn skipWhitespace(self: *Lexer) void {
-        while (std.ascii.isWhitespace(self.peek())) {
-            self.advance();
+        while (true) {
+            while (std.ascii.isWhitespace(self.peek())) {
+                self.advance();
+            }
+            // Line comment: skip from '//' to end of line.
+            if (self.peek() == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '/') {
+                while (self.peek() != 0 and self.peek() != '\n') {
+                    self.advance();
+                }
+                continue;
+            }
+            break;
         }
     }
 
@@ -470,4 +480,53 @@ test "lexer: fn as identifier prefix" {
     const ident = lex.next();
     try std.testing.expectEqual(ident.tag, .identifier);
     try std.testing.expectEqualStrings(lex.lexeme(ident), "fn_name");
+}
+
+test "lexer: line comment skipped" {
+    var lex = Lexer.init("// this is a comment\nlet x = 5");
+
+    try std.testing.expectEqual(lex.next().tag, .let);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .equal);
+    try std.testing.expectEqual(lex.next().tag, .number_literal);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: end-of-line comment" {
+    var lex = Lexer.init("let x = 5 // assign x");
+
+    try std.testing.expectEqual(lex.next().tag, .let);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .equal);
+    try std.testing.expectEqual(lex.next().tag, .number_literal);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: multiple comment lines" {
+    var lex = Lexer.init("// first\n// second\nlet x = 5");
+
+    try std.testing.expectEqual(lex.next().tag, .let);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .equal);
+    try std.testing.expectEqual(lex.next().tag, .number_literal);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: comment at end of file without newline" {
+    var lex = Lexer.init("let x = 5 // done");
+
+    try std.testing.expectEqual(lex.next().tag, .let);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .equal);
+    try std.testing.expectEqual(lex.next().tag, .number_literal);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: slash still works as division" {
+    var lex = Lexer.init("a / b");
+
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .slash);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .eof);
 }

@@ -45,8 +45,20 @@ and keywords use ASCII only.
 ### 2.2 Whitespace and Comments
 
 Whitespace (spaces, tabs, newlines) separates tokens but is otherwise ignored.
-There is no comment syntax in ktr source at present. Comments are a feature of
-the IR format (`#`-prefixed lines).
+
+Line comments begin with `//` and extend to the end of the line. They are
+treated as whitespace and may appear anywhere a token boundary is valid.
+
+```
+COMMENT = "//" , { ANY - NEWLINE } ;
+```
+
+Example:
+
+```ktr
+// This is a comment
+let x = 100mm  // inline comment
+```
 
 ### 2.3 Keywords
 

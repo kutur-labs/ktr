@@ -164,6 +164,8 @@ PERCENTAGE       = NUMBER , "%" ;
 
 STRING           = '"' , { ANY - '"' } , '"' ;
 
+COMMENT          = "//" , { ANY - NEWLINE } ;
+
 (* Keywords (reserved, cannot be used as identifiers):                *)
 (* let  input  fn  return  search  bounds  tolerance                  *)
 (* require  export  as  assert                                        *)
