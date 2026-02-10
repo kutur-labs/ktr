@@ -592,3 +592,40 @@ test "roundtrip: fn param shadows outer binding" {
         \\let y = scale(3)
     );
 }
+
+test "roundtrip: point.x field access" {
+    try expectEmitRoundtrip("let p = point(100mm, 50mm) let x = p.x");
+}
+
+test "roundtrip: point.y field access" {
+    try expectEmitRoundtrip("let p = point(100mm, 50mm) let y = p.y");
+}
+
+test "roundtrip: line.point1 field access" {
+    try expectEmitRoundtrip(
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let p = l.point1
+    );
+}
+
+test "roundtrip: chained line.point1.x" {
+    try expectEmitRoundtrip(
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let x = l.point1.x
+    );
+}
+
+test "roundtrip: bezier.point3 field access" {
+    try expectEmitRoundtrip(
+        \\let p1 = point(0mm, 0mm)
+        \\let p2 = point(100mm, 0mm)
+        \\let p3 = point(100mm, 100mm)
+        \\let p4 = point(0mm, 100mm)
+        \\let c = bezier(p1, p2, p3, p4)
+        \\let q = c.point3
+    );
+}

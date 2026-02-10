@@ -88,7 +88,7 @@ export_stmt      = "export" , expression , "as" , STRING ;
 (*   1. additive:        +  -        left-associative                 *)
 (*   2. multiplicative:  *  /        left-associative                 *)
 (*   3. unary:           -           prefix                           *)
-(*   4. postfix:         .method()   left-associative                 *)
+(*   4. postfix:         .field  .method()   left-associative         *)
 (* ------------------------------------------------------------------ *)
 
 expression       = additive_expr ;
@@ -102,7 +102,9 @@ multiplicative_expr
 
 unary_expr       = [ "-" ] , postfix_expr ;
 
-postfix_expr     = primary_expr , { method_call } ;
+postfix_expr     = primary_expr , { field_access | method_call } ;
+
+field_access     = "." , IDENT ;
 
 method_call      = "." , IDENT , "(" , [ arg_list ] , ")" ;
 

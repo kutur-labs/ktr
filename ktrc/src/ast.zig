@@ -37,6 +37,7 @@ pub const Diagnostic = struct {
         wrong_argument_count,
         argument_type_mismatch,
         duplicate_function,
+        invalid_field_access,
 
         pub fn message(self: Tag) []const u8 {
             return switch (self) {
@@ -58,6 +59,7 @@ pub const Diagnostic = struct {
                 .wrong_argument_count => "wrong number of arguments",
                 .argument_type_mismatch => "argument type mismatch",
                 .duplicate_function => "duplicate function name",
+                .invalid_field_access => "invalid field access",
             };
         }
     };
@@ -134,6 +136,15 @@ pub const Node = struct {
         mul,
         /// `lhs / rhs`. main_token: `/` token. lhs: left node. rhs: right node.
         div,
+
+        // ------------------------------
+        // Field Access
+        // ------------------------------
+
+        /// `expr.field_name`. Field access on a composite value.
+        /// main_token: dot token. lhs: expression node index.
+        /// rhs: unused (0). Field name is at main_token + 1.
+        field_access,
 
         // ------------------------------
         // Calls
@@ -222,6 +233,12 @@ pub const Ast = struct {
         // Layout: [param_count, params..., body_stmts..., return_expr]
         // body_stmts = extra[1 + param_count .. extra.len - 1]
         return extra[1 + param_count .. extra.len - 1];
+    }
+
+    /// Returns the field name for a `field_access` node.
+    pub fn fieldAccessName(self: Ast, node_index: NodeIndex) []const u8 {
+        const main_token = self.nodes.items(.main_token)[node_index];
+        return self.tokenSlice(main_token + 1);
     }
 
     /// Returns the return expression node index for a `fn_def` node.

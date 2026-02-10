@@ -182,7 +182,9 @@ multiplicative_expr = unary_expr ,
 
 unary_expr       = [ "-" ] , postfix_expr ;
 
-postfix_expr     = primary_expr , { method_call } ;
+postfix_expr     = primary_expr , { field_access | method_call } ;
+
+field_access     = "." , IDENT ;
 
 method_call      = "." , IDENT , "(" , [ arg_list ] , ")" ;
 
@@ -218,7 +220,7 @@ type_name        = "f64"
 | 1          | `+`  `-`          | Left          |
 | 2          | `*`  `/`          | Left          |
 | 3          | unary `-`         | Right (prefix)|
-| 4          | `.method()`       | Left          |
+| 4          | `.field` `.method()` | Left          |
 
 Comparison operators (`==`, `>`, `<`, etc.) appear only in `assert` and
 `require` clauses, not as general expression operators.
@@ -344,7 +346,35 @@ SVG). The string label is the human-readable name.
 | `bezier(p1, p2, p3, p4)`   | `(point, point, point, point) -> bezier`   |
 | `line(start, end)`         | `(point, point) -> line`                   |
 
-### 6.2 Point Methods
+### 6.2 Field Accessors
+
+Composite types expose named fields via dot syntax. Field access can be
+chained (e.g., `some_line.point1.x`).
+
+#### Point Fields
+
+| Field | Type     | Description                        |
+|-------|----------|------------------------------------|
+| `.x`  | `length` | Horizontal coordinate of the point |
+| `.y`  | `length` | Vertical coordinate of the point   |
+
+#### Line Fields
+
+| Field     | Type    | Description              |
+|-----------|---------|--------------------------|
+| `.point1` | `point` | Start point of the line  |
+| `.point2` | `point` | End point of the line    |
+
+#### Bezier Fields
+
+| Field     | Type    | Description                     |
+|-----------|---------|---------------------------------|
+| `.point1` | `point` | First control point (start)     |
+| `.point2` | `point` | Second control point            |
+| `.point3` | `point` | Third control point             |
+| `.point4` | `point` | Fourth control point (end)      |
+
+### 6.3 Point Methods
 
 | Method         | Signature                      | Description                      |
 |----------------|--------------------------------|----------------------------------|
@@ -355,7 +385,7 @@ SVG). The string label is the human-readable name.
 | `.dx(other)`   | `(point, point) -> length`     | Horizontal distance to `other`   |
 | `.dy(other)`   | `(point, point) -> length`     | Vertical distance to `other`     |
 
-### 6.3 Curve Methods
+### 6.4 Curve Methods
 
 | Method         | Signature                      | Description                      |
 |----------------|--------------------------------|----------------------------------|
@@ -435,6 +465,7 @@ The compiler currently implements the following subset:
 - [x] `point`, `bezier`, `line` constructor types with full pipeline support
 - [x] `fn` definitions with typed parameters
 - [x] Function calls (user-defined and built-in constructors)
+- [x] Field accessors (`.x`, `.y`, `.point1`, etc.) with chaining
 
 Planned (not yet implemented):
 

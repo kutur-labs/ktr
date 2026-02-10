@@ -268,6 +268,22 @@ const Analyzer = struct {
                 break :blk try self.resolveArithmeticType(node.tag, lhs_ty, rhs_ty, node.main_token);
             },
             .fn_call => try self.resolveCallType(node_index),
+            .field_access => blk2: {
+                const base_ty = try self.resolveType(node.data.lhs);
+                if (base_ty == .poison) break :blk2 .poison;
+                const field_name = self.tree.tokenSlice(node.main_token + 1);
+                // Map sema type to ir type for the field lookup.
+                if (base_ty == .poison) break :blk2 .poison;
+                const ir_base_ty = std.meta.stringToEnum(ir.Type, @tagName(base_ty)) orelse {
+                    try self.addDiag(.invalid_field_access, node.main_token + 1);
+                    break :blk2 .poison;
+                };
+                if (ir.lookupField(ir_base_ty, field_name)) |info| {
+                    break :blk2 mapFromIrType(info.result_ty);
+                }
+                try self.addDiag(.invalid_field_access, node.main_token + 1);
+                break :blk2 .poison;
+            },
             // Structurally impossible: the parser only produces expression nodes
             // as values in statements; root, let_statement, input_statement,
             // fn_def, param, and return_stmt never appear here.
@@ -1318,4 +1334,168 @@ test "analyze: fn duplicate param within function" {
     // Duplicate param within the same function is still an error.
     try std.testing.expect(sem.hasErrors());
     try std.testing.expectEqual(.duplicate_binding, sem.diagnostics[0].tag);
+}
+
+test "analyze: point.x resolves to length" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm) let x = p.x";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.length, sem.symbols.get("x").?.ty);
+}
+
+test "analyze: point.y resolves to length" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm) let y = p.y";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.length, sem.symbols.get("y").?.ty);
+}
+
+test "analyze: line.point1 resolves to point" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let p = l.point1
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.point, sem.symbols.get("p").?.ty);
+}
+
+test "analyze: line.point2 resolves to point" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let p = l.point2
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.point, sem.symbols.get("p").?.ty);
+}
+
+test "analyze: bezier.point1 resolves to point" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let p1 = point(0mm, 0mm)
+        \\let p2 = point(100mm, 0mm)
+        \\let p3 = point(100mm, 100mm)
+        \\let p4 = point(0mm, 100mm)
+        \\let c = bezier(p1, p2, p3, p4)
+        \\let q = c.point1
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.point, sem.symbols.get("q").?.ty);
+}
+
+test "analyze: chained field access line.point1.x resolves to length" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let x = l.point1.x
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.length, sem.symbols.get("x").?.ty);
+}
+
+test "analyze: invalid field on point" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm) let z = p.z";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.invalid_field_access, sem.diagnostics[0].tag);
+}
+
+test "analyze: field access on scalar type" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let x = 42 let y = x.foo";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.invalid_field_access, sem.diagnostics[0].tag);
+}
+
+test "analyze: field access poison propagation" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let y = unknown.x";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    // One error for undefined ref, poison propagates through field access.
+    try std.testing.expectEqual(1, sem.diagnostics.len);
+    try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
+    try std.testing.expectEqual(.poison, sem.symbols.get("y").?.ty);
+}
+
+test "analyze: field access result usable in arithmetic" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm) let x = p.x * 2";
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.length, sem.symbols.get("x").?.ty);
 }

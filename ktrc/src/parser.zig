@@ -73,7 +73,7 @@ const Parser = struct {
     }
 
     fn parseMultiplicativeExpr(self: *Parser) Error!ast.NodeIndex {
-        var lhs = try self.parsePrimaryExpr();
+        var lhs = try self.parsePostfixExpr();
 
         while (true) {
             const tag = self.currentTag();
@@ -84,11 +84,28 @@ const Parser = struct {
             };
             const op_token = self.cursor;
             self.advance();
-            const rhs = try self.parsePrimaryExpr();
+            const rhs = try self.parsePostfixExpr();
             lhs = try self.addNode(.{
                 .tag = node_tag,
                 .main_token = op_token,
                 .data = .{ .lhs = lhs, .rhs = rhs },
+            });
+        }
+
+        return lhs;
+    }
+
+    fn parsePostfixExpr(self: *Parser) Error!ast.NodeIndex {
+        var lhs = try self.parsePrimaryExpr();
+
+        while (self.currentTag() == .dot) {
+            const dot_token = self.cursor;
+            self.advance(); // consume '.'
+            _ = try self.expect(.identifier, .expected_identifier);
+            lhs = try self.addNode(.{
+                .tag = .field_access,
+                .main_token = dot_token,
+                .data = .{ .lhs = lhs, .rhs = 0 },
             });
         }
 
@@ -875,4 +892,81 @@ test "parse: fn_def and let coexist" {
     try std.testing.expectEqual(2, statements.len);
     try std.testing.expectEqual(.fn_def, tree.nodes.get(statements[0]).tag);
     try std.testing.expectEqual(.let_statement, tree.nodes.get(statements[1]).tag);
+}
+
+test "parse: field access p.x" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm) let x = p.x";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(2, statements.len);
+
+    const let_node = tree.nodes.get(statements[1]);
+    try std.testing.expectEqual(.let_statement, let_node.tag);
+
+    const value_node = tree.nodes.get(let_node.data.lhs);
+    try std.testing.expectEqual(.field_access, value_node.tag);
+
+    // The base expression should be an identifier_ref to 'p'.
+    const base_node = tree.nodes.get(value_node.data.lhs);
+    try std.testing.expectEqual(.identifier_ref, base_node.tag);
+    try std.testing.expectEqualStrings("p", tree.tokenSlice(base_node.main_token));
+
+    // The field name is at main_token + 1 (the identifier after the dot).
+    try std.testing.expectEqualStrings("x", tree.fieldAccessName(let_node.data.lhs));
+}
+
+test "parse: chained field access l.point1.x" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let x = l.point1.x
+    ;
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(4, statements.len);
+
+    const let_x = tree.nodes.get(statements[3]);
+    const outer_access = tree.nodes.get(let_x.data.lhs);
+    try std.testing.expectEqual(.field_access, outer_access.tag);
+    try std.testing.expectEqualStrings("x", tree.fieldAccessName(let_x.data.lhs));
+
+    // Inner field access: l.point1
+    const inner_access = tree.nodes.get(outer_access.data.lhs);
+    try std.testing.expectEqual(.field_access, inner_access.tag);
+    try std.testing.expectEqualStrings("point1", tree.tokenSlice(inner_access.main_token + 1));
+}
+
+test "parse: field access binds tighter than multiplication" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "let p = point(100mm, 50mm) let x = p.x * 2";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    const let_node = tree.nodes.get(statements[1]);
+    const value_node = tree.nodes.get(let_node.data.lhs);
+
+    // Top-level should be mul, not field_access.
+    try std.testing.expectEqual(.mul, value_node.tag);
+
+    // LHS of mul should be field_access.
+    const lhs = tree.nodes.get(value_node.data.lhs);
+    try std.testing.expectEqual(.field_access, lhs.tag);
+
+    // RHS of mul should be number_literal.
+    const rhs = tree.nodes.get(value_node.data.rhs);
+    try std.testing.expectEqual(.number_literal, rhs.tag);
 }

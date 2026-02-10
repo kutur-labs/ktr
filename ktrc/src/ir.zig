@@ -68,6 +68,14 @@ pub const Op = enum(u8) {
     point,
     bezier,
     line,
+    point_x,
+    point_y,
+    line_p1,
+    line_p2,
+    bezier_p1,
+    bezier_p2,
+    bezier_p3,
+    bezier_p4,
 
     pub fn toStr(self: Op) []const u8 {
         return @tagName(self);
@@ -83,6 +91,30 @@ pub const Op = enum(u8) {
         return switch (self) {
             .point, .bezier, .line => true,
             .add, .sub, .mul, .div => false,
+            .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4 => false,
+        };
+    }
+
+    /// Returns true for field accessor ops (e.g., `point_x`, `line_p1`).
+    pub fn isAccessor(self: Op) bool {
+        return switch (self) {
+            .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4 => true,
+            else => false,
+        };
+    }
+
+    /// Returns the source-level field name for an accessor op (e.g., `point_x` -> `"x"`).
+    pub fn accessorField(self: Op) ?[]const u8 {
+        return switch (self) {
+            .point_x => "x",
+            .point_y => "y",
+            .line_p1 => "point1",
+            .line_p2 => "point2",
+            .bezier_p1 => "point1",
+            .bezier_p2 => "point2",
+            .bezier_p3 => "point3",
+            .bezier_p4 => "point4",
+            else => null,
         };
     }
 };
@@ -102,6 +134,43 @@ pub const builtin_sigs = std.StaticStringMap(BuiltinSig).initComptime(.{
     .{ "point", BuiltinSig{ .op = .point, .params = &.{ .length, .length }, .ret = .point } },
     .{ "bezier", BuiltinSig{ .op = .bezier, .params = &.{ .point, .point, .point, .point }, .ret = .bezier } },
     .{ "line", BuiltinSig{ .op = .line, .params = &.{ .point, .point }, .ret = .line } },
+});
+
+// ─── Field accessor registry ─────────────────────────────────────────────
+
+/// Describes a field that can be accessed on a composite type.
+pub const FieldInfo = struct {
+    op: Op,
+    result_ty: Type,
+};
+
+/// Look up a field on a composite type. Returns null if the type has no
+/// such field. Single source of truth used by sema (type checking) and
+/// lower (op mapping).
+pub fn lookupField(base_ty: Type, field: []const u8) ?FieldInfo {
+    return switch (base_ty) {
+        .point => point_fields.get(field),
+        .line => line_fields.get(field),
+        .bezier => bezier_fields.get(field),
+        else => null,
+    };
+}
+
+const point_fields = std.StaticStringMap(FieldInfo).initComptime(.{
+    .{ "x", FieldInfo{ .op = .point_x, .result_ty = .length } },
+    .{ "y", FieldInfo{ .op = .point_y, .result_ty = .length } },
+});
+
+const line_fields = std.StaticStringMap(FieldInfo).initComptime(.{
+    .{ "point1", FieldInfo{ .op = .line_p1, .result_ty = .point } },
+    .{ "point2", FieldInfo{ .op = .line_p2, .result_ty = .point } },
+});
+
+const bezier_fields = std.StaticStringMap(FieldInfo).initComptime(.{
+    .{ "point1", FieldInfo{ .op = .bezier_p1, .result_ty = .point } },
+    .{ "point2", FieldInfo{ .op = .bezier_p2, .result_ty = .point } },
+    .{ "point3", FieldInfo{ .op = .bezier_p3, .result_ty = .point } },
+    .{ "point4", FieldInfo{ .op = .bezier_p4, .result_ty = .point } },
 });
 
 pub const Operand = union(enum) {

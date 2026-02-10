@@ -445,7 +445,7 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
           [/%[a-zA-Z_]\w*/, "variable"],
           [/%\d+/, "variable"],
           [/\b(length|percentage|f64|point|bezier|line|bool)\b/, "type"],
-          [/\b(add|sub|mul|div|point|bezier|line)\b(?=\s)/, "keyword.other"],
+          [/\b(add|sub|mul|div|point|bezier|line|point_x|point_y|line_p1|line_p2|bezier_p1|bezier_p2|bezier_p3|bezier_p4)\b(?=\s)/, "keyword.other"],
           [/\b\d+(\.\d+)?(mm|cm)\b/, "number.unit"],
           [/\b\d+\.\d+\b/, "number.float"],
           [/\b\d+\b/, "number"],

@@ -101,6 +101,15 @@ const Lowerer = struct {
             .fn_call => {
                 return try self.lowerFnCall(node_index);
             },
+            .field_access => {
+                const base_operand = try self.lowerExpr(node.data.lhs);
+                const field_name = self.tree.tokenSlice(node.main_token + 1);
+                const base_sema_ty = self.sema_result.node_types[node.data.lhs];
+                const base_ir_ty = mapType(base_sema_ty);
+                const info = ir.lookupField(base_ir_ty, field_name).?;
+                const operands = try self.ally.dupe(Operand, &.{base_operand});
+                return self.emitBuiltin(info.op, operands, node_index);
+            },
             .root, .let_statement, .input_statement, .fn_def, .param, .return_stmt => unreachable,
         };
     }
@@ -950,4 +959,109 @@ test "lower: fn_def return literal" {
         else => return error.TestUnexpectedResult,
     }
     try std.testing.expectEqualStrings(fn_def.ret, fn_def.body[0].name);
+}
+
+test "lower: point.x accessor" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "let p = point(100mm, 50mm) let x = p.x");
+    defer result.deinit();
+
+    // %p : point = point 100mm 50mm, %x : length = point_x %p
+    try std.testing.expectEqual(2, result.instructions.len);
+
+    const inst = result.instructions[1];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.length, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point_x, b.op);
+            try std.testing.expectEqual(1, b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("p", b.operands[0].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: point.y accessor" {
+    const allocator = std.testing.allocator;
+    var result = try lowerSource(allocator, "let p = point(100mm, 50mm) let y = p.y");
+    defer result.deinit();
+
+    try std.testing.expectEqual(2, result.instructions.len);
+
+    const inst = result.instructions[1];
+    try std.testing.expectEqualStrings("y", inst.name);
+    try std.testing.expectEqual(Type.length, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point_y, b.op);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: line.point1 accessor" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let p = l.point1
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    // a, b, l, p = 4 instructions
+    try std.testing.expectEqual(4, result.instructions.len);
+
+    const inst = result.instructions[3];
+    try std.testing.expectEqualStrings("p", inst.name);
+    try std.testing.expectEqual(Type.point, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.line_p1, b.op);
+            try std.testing.expectEqual(1, b.operands.len);
+            try std.testing.expectEqualStrings("l", b.operands[0].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: chained line.point1.x" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let x = l.point1.x
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    // a, b, l, %0 (line_p1 temp), x (point_x) = 5 instructions
+    try std.testing.expectEqual(5, result.instructions.len);
+
+    // The temp should be line_p1
+    const temp = result.instructions[3];
+    switch (temp.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.line_p1, b.op);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    // The final instruction should be point_x on the temp
+    const inst = result.instructions[4];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.length, inst.ty);
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point_x, b.op);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }

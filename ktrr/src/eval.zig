@@ -51,6 +51,14 @@ pub const RuntimeValue = union(enum) {
             .scalar, .point, .bezier => unreachable,
         };
     }
+
+    /// Extract the bezier payload. Asserts the value is a bezier.
+    pub fn asBezier(self: RuntimeValue) [4][2]f64 {
+        return switch (self) {
+            .bezier => |b| b,
+            .scalar, .point, .line => unreachable,
+        };
+    }
 };
 
 pub const Binding = struct {
@@ -223,6 +231,14 @@ fn evalBuiltin(scope: Scope, b: Inst.Builtin) EvalError!RuntimeValue {
             (try resolveOperand(scope, b.operands[0])).asPoint(),
             (try resolveOperand(scope, b.operands[1])).asPoint(),
         } },
+        .point_x => .{ .scalar = (try resolveOperand(scope, b.operands[0])).asPoint()[0] },
+        .point_y => .{ .scalar = (try resolveOperand(scope, b.operands[0])).asPoint()[1] },
+        .line_p1 => .{ .point = (try resolveOperand(scope, b.operands[0])).asLine()[0] },
+        .line_p2 => .{ .point = (try resolveOperand(scope, b.operands[0])).asLine()[1] },
+        .bezier_p1 => .{ .point = (try resolveOperand(scope, b.operands[0])).asBezier()[0] },
+        .bezier_p2 => .{ .point = (try resolveOperand(scope, b.operands[0])).asBezier()[1] },
+        .bezier_p3 => .{ .point = (try resolveOperand(scope, b.operands[0])).asBezier()[2] },
+        .bezier_p4 => .{ .point = (try resolveOperand(scope, b.operands[0])).asBezier()[3] },
     };
 }
 
@@ -1039,4 +1055,144 @@ test "eval: plan key roundtrip test case" {
     try std.testing.expectEqual(Type.length, x.ty);
     // (100 * 1.0) / 2 = 50.0
     try std.testing.expectEqual(@as(f64, 50.0), x.value.asScalar());
+}
+
+test "eval: point_x accessor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p : point = point 100mm 50mm
+        \\%x : length = point_x %p
+    );
+    defer result.deinit();
+
+    const px = findBinding(result.bindings, "x").?;
+    try std.testing.expectEqual(Type.length, px.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), px.value.asScalar());
+}
+
+test "eval: point_y accessor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p : point = point 100mm 50mm
+        \\%y : length = point_y %p
+    );
+    defer result.deinit();
+
+    const py = findBinding(result.bindings, "y").?;
+    try std.testing.expectEqual(Type.length, py.ty);
+    try std.testing.expectEqual(@as(f64, 50.0), py.value.asScalar());
+}
+
+test "eval: line_p1 accessor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%a : point = point 10mm 20mm
+        \\%b : point = point 30mm 40mm
+        \\%l : line = line %a %b
+        \\%p : point = line_p1 %l
+    );
+    defer result.deinit();
+
+    const p = findBinding(result.bindings, "p").?;
+    try std.testing.expectEqual(Type.point, p.ty);
+    try std.testing.expectEqual(@as(f64, 10.0), p.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 20.0), p.value.point[1]);
+}
+
+test "eval: line_p2 accessor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%a : point = point 10mm 20mm
+        \\%b : point = point 30mm 40mm
+        \\%l : line = line %a %b
+        \\%p : point = line_p2 %l
+    );
+    defer result.deinit();
+
+    const p = findBinding(result.bindings, "p").?;
+    try std.testing.expectEqual(Type.point, p.ty);
+    try std.testing.expectEqual(@as(f64, 30.0), p.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 40.0), p.value.point[1]);
+}
+
+test "eval: bezier_p1 accessor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p1 : point = point 0mm 0mm
+        \\%p2 : point = point 100mm 0mm
+        \\%p3 : point = point 100mm 100mm
+        \\%p4 : point = point 0mm 100mm
+        \\%c : bezier = bezier %p1 %p2 %p3 %p4
+        \\%q : point = bezier_p1 %c
+    );
+    defer result.deinit();
+
+    const q = findBinding(result.bindings, "q").?;
+    try std.testing.expectEqual(Type.point, q.ty);
+    try std.testing.expectEqual(@as(f64, 0.0), q.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 0.0), q.value.point[1]);
+}
+
+test "eval: bezier_p3 accessor" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p1 : point = point 0mm 0mm
+        \\%p2 : point = point 100mm 0mm
+        \\%p3 : point = point 100mm 100mm
+        \\%p4 : point = point 0mm 100mm
+        \\%c : bezier = bezier %p1 %p2 %p3 %p4
+        \\%q : point = bezier_p3 %c
+    );
+    defer result.deinit();
+
+    const q = findBinding(result.bindings, "q").?;
+    try std.testing.expectEqual(Type.point, q.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), q.value.point[0]);
+    try std.testing.expectEqual(@as(f64, 100.0), q.value.point[1]);
+}
+
+test "eval: chained line_p1 then point_x" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%a : point = point 10mm 20mm
+        \\%b : point = point 30mm 40mm
+        \\%l : line = line %a %b
+        \\%0 : point = line_p1 %l
+        \\%x : length = point_x %0
+    );
+    defer result.deinit();
+
+    const x = findBinding(result.bindings, "x").?;
+    try std.testing.expectEqual(Type.length, x.ty);
+    try std.testing.expectEqual(@as(f64, 10.0), x.value.asScalar());
+}
+
+test "eval: accessor with arithmetic" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%p : point = point 100mm 50mm
+        \\%px : length = point_x %p
+        \\%x : length = mul %px 2
+    );
+    defer result.deinit();
+
+    const x = findBinding(result.bindings, "x").?;
+    try std.testing.expectEqual(Type.length, x.ty);
+    try std.testing.expectEqual(@as(f64, 200.0), x.value.asScalar());
 }

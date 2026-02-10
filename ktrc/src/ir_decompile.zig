@@ -21,15 +21,16 @@ fn writeKtrValue(writer: anytype, value: Value, ty: Type) !void {
 }
 
 /// Map an IR op to a ktr infix operator string.
-/// Only valid for non-constructor ops.
+/// Only valid for arithmetic ops.
 fn opToInfix(op: Op) []const u8 {
-    std.debug.assert(!op.isConstructor());
+    std.debug.assert(!op.isConstructor() and !op.isAccessor());
     return switch (op) {
         .add => " + ",
         .sub => " - ",
         .mul => " * ",
         .div => " / ",
         .point, .bezier, .line => unreachable,
+        .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4 => unreachable,
     };
 }
 
@@ -77,11 +78,12 @@ fn buildInstMap(allocator: std.mem.Allocator, instructions: []const Inst) !std.S
 }
 
 fn opPrecedence(op: Op) u8 {
-    std.debug.assert(!op.isConstructor());
+    std.debug.assert(!op.isConstructor() and !op.isAccessor());
     return switch (op) {
         .add, .sub => 1,
         .mul, .div => 2,
         .point, .bezier, .line => unreachable,
+        .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4 => unreachable,
     };
 }
 
@@ -124,10 +126,15 @@ const Decompiler = struct {
         if (v.unit) |u| try writer.writeAll(u.toStr());
     }
 
-    /// Write a builtin op inline. Constructor ops use `name(arg, ...)` syntax;
+    /// Write a builtin op inline. Accessor ops use `operand.field` syntax;
+    /// constructor ops use `name(arg, ...)` syntax;
     /// infix ops use `lhs op rhs` syntax.
     fn writeBuiltinInline(self: *const Decompiler, writer: anytype, b: Inst.Builtin, parent_op: ?Op, is_rhs: bool) @TypeOf(writer).Error!void {
-        if (b.op.isConstructor()) {
+        if (b.op.isAccessor()) {
+            try self.writeExpr(writer, b.operands[0], null, false);
+            try writer.writeByte('.');
+            try writer.writeAll(b.op.accessorField().?);
+        } else if (b.op.isConstructor()) {
             try writer.writeAll(b.op.toStr());
             try writer.writeByte('(');
             for (b.operands, 0..) |operand, i| {
@@ -892,4 +899,45 @@ test "decompile roundtrip: fn multiple params" {
         \\input y = 20mm
         \\let z = add(x, y)
     );
+}
+
+test "decompile roundtrip: point.x field access" {
+    try expectDecompileRoundtrip("let p = point(100mm, 50mm)\nlet x = p.x");
+}
+
+test "decompile roundtrip: point.y field access" {
+    try expectDecompileRoundtrip("let p = point(100mm, 50mm)\nlet y = p.y");
+}
+
+test "decompile roundtrip: line.point1 field access" {
+    try expectDecompileRoundtrip(
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let p = l.point1
+    );
+}
+
+test "decompile roundtrip: chained line.point1.x" {
+    try expectDecompileRoundtrip(
+        \\let a = point(0mm, 0mm)
+        \\let b = point(100mm, 50mm)
+        \\let l = line(a, b)
+        \\let x = l.point1.x
+    );
+}
+
+test "decompile roundtrip: bezier.point3 field access" {
+    try expectDecompileRoundtrip(
+        \\let p1 = point(0mm, 0mm)
+        \\let p2 = point(100mm, 0mm)
+        \\let p3 = point(100mm, 100mm)
+        \\let p4 = point(0mm, 100mm)
+        \\let c = bezier(p1, p2, p3, p4)
+        \\let q = c.point3
+    );
+}
+
+test "decompile roundtrip: field access in arithmetic" {
+    try expectDecompileRoundtrip("let p = point(100mm, 50mm)\nlet x = p.x * 2");
 }
