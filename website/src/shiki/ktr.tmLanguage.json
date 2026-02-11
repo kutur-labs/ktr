@@ -43,7 +43,7 @@
       "patterns": [
         {
           "name": "keyword.control.ktr",
-          "match": "\\b(input|fn|let|return|require|export|search|assert|as)\\b"
+          "match": "\\b(input|fn|let|return|require|export|search|assert|as|piece)\\b"
         }
       ]
     },

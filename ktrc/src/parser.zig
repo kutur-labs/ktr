@@ -134,6 +134,11 @@ const Parser = struct {
             });
         }
 
+        // Anonymous piece expression: `piece { ... }`
+        if (tag == .piece) {
+            return self.parsePieceExpr();
+        }
+
         // Function call: identifier '(' arg_list ')'
         if (tag == .identifier and self.peekTag() == .l_paren) {
             return self.parseFnCall();
@@ -214,6 +219,79 @@ const Parser = struct {
             .tag = .input_statement,
             .main_token = input_token,
             .data = .{ .lhs = value_node, .rhs = 0 },
+        });
+    }
+
+    /// Parse a piece member definition: `IDENT = expression`.
+    fn parsePieceMember(self: *Parser) Error!ast.NodeIndex {
+        const name_token = try self.expect(.identifier, .expected_identifier);
+        _ = try self.expect(.equal, .expected_equal);
+        const value_node = try self.parseExpression();
+
+        return self.addNode(.{
+            .tag = .piece_member,
+            .main_token = name_token,
+            .data = .{ .lhs = value_node, .rhs = 0 },
+        });
+    }
+
+    fn parsePieceMembers(self: *Parser, members: *std.ArrayList(u32)) Error!void {
+        while (self.currentTag() != .r_brace and self.currentTag() != .eof) {
+            const member = try self.parsePieceMember();
+            try members.append(self.allocator, member);
+        }
+    }
+
+    /// Parse a piece definition: `piece IDENT { { piece_member } }`.
+    fn parsePieceDef(self: *Parser) Error!ast.NodeIndex {
+        const piece_token = self.cursor;
+        self.advance(); // consume 'piece'
+        _ = try self.expect(.identifier, .expected_identifier);
+        _ = try self.expect(.l_brace, .expected_l_brace);
+
+        // Collect piece members separately to avoid interleaving with
+        // expression-owned extra_data (e.g. fn_call argument lists).
+        var members = std.ArrayList(u32).empty;
+        defer members.deinit(self.allocator);
+
+        try self.parsePieceMembers(&members);
+
+        _ = try self.expect(.r_brace, .expected_r_brace);
+
+        const start_extra = self.extra_data.items.len;
+        try self.extra_data.appendSlice(self.allocator, members.items);
+        const end_extra = self.extra_data.items.len;
+
+        return self.addNode(.{
+            .tag = .piece_def,
+            .main_token = piece_token,
+            .data = .{ .lhs = @intCast(start_extra), .rhs = @intCast(end_extra) },
+        });
+    }
+
+    /// Parse an anonymous piece expression: `piece { { piece_member } }`.
+    fn parsePieceExpr(self: *Parser) Error!ast.NodeIndex {
+        const piece_token = self.cursor;
+        self.advance(); // consume 'piece'
+        _ = try self.expect(.l_brace, .expected_l_brace);
+
+        // Collect piece members separately to avoid interleaving with
+        // expression-owned extra_data (e.g. fn_call argument lists).
+        var members = std.ArrayList(u32).empty;
+        defer members.deinit(self.allocator);
+
+        try self.parsePieceMembers(&members);
+
+        _ = try self.expect(.r_brace, .expected_r_brace);
+
+        const start_extra = self.extra_data.items.len;
+        try self.extra_data.appendSlice(self.allocator, members.items);
+        const end_extra = self.extra_data.items.len;
+
+        return self.addNode(.{
+            .tag = .piece_expr,
+            .main_token = piece_token,
+            .data = .{ .lhs = @intCast(start_extra), .rhs = @intCast(end_extra) },
         });
     }
 
@@ -326,6 +404,7 @@ const Parser = struct {
             .let => self.parseLetStatement(),
             .input => self.parseInputStatement(),
             .@"fn" => self.parseFnDef(),
+            .piece => self.parsePieceDef(),
             else => {
                 try self.addDiag(.unexpected_token);
                 return error.ParseFailed;
@@ -337,7 +416,7 @@ const Parser = struct {
     fn synchronize(self: *Parser) void {
         while (self.currentTag() != .eof) {
             const tag = self.currentTag();
-            if (tag == .let or tag == .input or tag == .@"fn") return;
+            if (tag == .let or tag == .input or tag == .@"fn" or tag == .piece) return;
             self.advance();
         }
     }
@@ -892,6 +971,127 @@ test "parse: fn_def and let coexist" {
     try std.testing.expectEqual(2, statements.len);
     try std.testing.expectEqual(.fn_def, tree.nodes.get(statements[0]).tag);
     try std.testing.expectEqual(.let_statement, tree.nodes.get(statements[1]).tag);
+}
+
+test "parse: piece_def simple" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\piece neckhole {
+        \\  top_left = point(10mm, 0mm)
+        \\  top_right = point(20mm, 0mm)
+        \\}
+    ;
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(1, statements.len);
+
+    const piece_node = tree.nodes.get(statements[0]);
+    try std.testing.expectEqual(.piece_def, piece_node.tag);
+    try std.testing.expectEqualStrings("neckhole", tree.tokenSlice(piece_node.main_token + 1));
+
+    const members = tree.pieceDefMembers(statements[0]);
+    try std.testing.expectEqual(2, members.len);
+    try std.testing.expectEqual(.piece_member, tree.nodes.get(members[0]).tag);
+    try std.testing.expectEqual(.piece_member, tree.nodes.get(members[1]).tag);
+
+    const member0 = tree.nodes.get(members[0]);
+    try std.testing.expectEqualStrings("top_left", tree.tokenSlice(member0.main_token));
+    try std.testing.expectEqual(.fn_call, tree.nodes.get(member0.data.lhs).tag);
+}
+
+test "parse: piece_def allows zero members" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 = "piece empty { }";
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(1, statements.len);
+    const members = tree.pieceDefMembers(statements[0]);
+    try std.testing.expectEqual(0, members.len);
+}
+
+test "parse: piece_def and let coexist" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\piece neckhole {
+        \\  top_left = point(100mm, 50mm)
+        \\}
+        \\let x = neckhole.top_left.x
+    ;
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(@as(usize, 2), statements.len);
+    try std.testing.expectEqual(.piece_def, tree.nodes.get(statements[0]).tag);
+    try std.testing.expectEqual(.let_statement, tree.nodes.get(statements[1]).tag);
+}
+
+test "parse: anonymous piece expression in let" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\let sleeve = piece {
+        \\  top_left = point(0mm, 0mm)
+        \\  top_right = point(10mm, 0mm)
+        \\}
+    ;
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(@as(usize, 1), statements.len);
+
+    const let_node = tree.nodes.get(statements[0]);
+    try std.testing.expectEqual(.let_statement, let_node.tag);
+
+    const piece_expr = tree.nodes.get(let_node.data.lhs);
+    try std.testing.expectEqual(.piece_expr, piece_expr.tag);
+
+    const members = tree.pieceExprMembers(let_node.data.lhs);
+    try std.testing.expectEqual(@as(usize, 2), members.len);
+    try std.testing.expectEqual(.piece_member, tree.nodes.get(members[0]).tag);
+    try std.testing.expectEqual(.piece_member, tree.nodes.get(members[1]).tag);
+}
+
+test "parse: return anonymous piece expression" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn make_piece() {
+        \\  return piece {
+        \\    p = point(0mm, 0mm)
+        \\  }
+        \\}
+    ;
+
+    var tree = try parse(allocator, source);
+    defer tree.deinit();
+
+    try std.testing.expect(!tree.hasErrors());
+    const statements = tree.rootStatements(0);
+    try std.testing.expectEqual(@as(usize, 1), statements.len);
+
+    const fn_node = tree.nodes.get(statements[0]);
+    try std.testing.expectEqual(.fn_def, fn_node.tag);
+
+    const ret_expr_idx = tree.fnDefReturn(statements[0]);
+    const ret_expr = tree.nodes.get(ret_expr_idx);
+    try std.testing.expectEqual(.piece_expr, ret_expr.tag);
+
+    const members = tree.pieceExprMembers(ret_expr_idx);
+    try std.testing.expectEqual(@as(usize, 1), members.len);
+    try std.testing.expectEqualStrings("p", tree.tokenSlice(tree.nodes.get(members[0]).main_token));
 }
 
 test "parse: field access p.x" {

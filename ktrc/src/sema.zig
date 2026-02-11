@@ -17,6 +17,8 @@ pub const Type = enum {
     bezier,
     /// Straight segment between two points.
     line,
+    /// Named collection of member bindings.
+    piece,
     /// Unresolvable value; suppresses cascading diagnostics.
     poison,
 };
@@ -38,8 +40,39 @@ pub const ParamInfo = struct {
 pub const FnSig = struct {
     params: []const ParamInfo,
     ret_ty: Type,
+    piece_info: ?PieceInfo = null,
     node: ast.NodeIndex,
 };
+
+pub const PieceMember = struct {
+    name: []const u8,
+    ty: Type,
+};
+
+pub const PieceInfo = struct {
+    members: []const PieceMember,
+};
+
+fn deinitPieceMap(
+    allocator: std.mem.Allocator,
+    pieces: *std.StringArrayHashMap(PieceInfo),
+) void {
+    for (pieces.values()) |info| {
+        allocator.free(info.members);
+    }
+    pieces.deinit();
+}
+
+fn deinitPieceExprInfoMap(
+    allocator: std.mem.Allocator,
+    piece_expr_infos: *std.AutoHashMap(ast.NodeIndex, PieceInfo),
+) void {
+    var it = piece_expr_infos.valueIterator();
+    while (it.next()) |info| {
+        allocator.free(info.members);
+    }
+    piece_expr_infos.deinit();
+}
 
 /// Result of semantic analysis. Symbol names are slices borrowed from the
 /// original source buffer (via the Ast), so the caller must keep both the
@@ -50,6 +83,8 @@ pub const Sema = struct {
     symbols: std.StringArrayHashMap(Symbol),
     /// User-defined function signatures, keyed by function name.
     functions: std.StringArrayHashMap(FnSig),
+    /// Top-level piece definitions, keyed by piece name.
+    pieces: std.StringArrayHashMap(PieceInfo),
     /// Resolved type for each AST node, indexed by NodeIndex.
     /// Only expression nodes have meaningful values; other slots are undefined.
     node_types: []Type,
@@ -65,8 +100,10 @@ pub const Sema = struct {
         self.symbols.deinit();
         for (self.functions.values()) |sig| {
             self.allocator.free(sig.params);
+            if (sig.piece_info) |info| self.allocator.free(info.members);
         }
         self.functions.deinit();
+        deinitPieceMap(self.allocator, &self.pieces);
         self.allocator.free(self.node_types);
         self.allocator.free(self.diagnostics);
         self.* = undefined;
@@ -78,6 +115,8 @@ const Analyzer = struct {
     allocator: std.mem.Allocator,
     symbols: std.StringArrayHashMap(Symbol),
     functions: std.StringArrayHashMap(FnSig),
+    pieces: std.StringArrayHashMap(PieceInfo),
+    piece_expr_infos: std.AutoHashMap(ast.NodeIndex, PieceInfo),
     node_types: []Type,
     diagnostics: std.ArrayList(Diagnostic),
 
@@ -96,24 +135,55 @@ const Analyzer = struct {
         return false;
     }
 
-    const SavedEntry = struct { name: []const u8, sym: Symbol };
-
-    /// Put a symbol, saving the previous outer-scope value if it would be
-    /// overwritten. The saved entries are restored after function analysis.
-    fn saveAndPut(
-        self: *Analyzer,
-        name: []const u8,
-        sym: Symbol,
+    /// A lexical scope context that tracks the symbol table boundary and
+    /// any outer-scope entries shadowed within this scope. On `restore()`,
+    /// new entries are popped and shadowed entries are put back.
+    const ScopedContext = struct {
+        const SavedEntry = struct { name: []const u8, sym: Symbol };
+        analyzer: *Analyzer,
         outer_count: usize,
-        saved: *std.ArrayList(SavedEntry),
-    ) std.mem.Allocator.Error!void {
-        if (self.symbols.getIndex(name)) |idx| {
-            if (idx < outer_count) {
-                try saved.append(self.allocator, .{ .name = name, .sym = self.symbols.values()[idx] });
+        saved: std.ArrayList(SavedEntry),
+
+        fn init(analyzer: *Analyzer) ScopedContext {
+            return .{
+                .analyzer = analyzer,
+                .outer_count = analyzer.symbols.count(),
+                .saved = std.ArrayList(SavedEntry).empty,
+            };
+        }
+
+        /// Check if `name` already exists within this scope (not outer).
+        fn containsLocal(self: *const ScopedContext, name: []const u8) bool {
+            return self.analyzer.containsLocal(name, self.outer_count);
+        }
+
+        /// Put a symbol, saving any shadowed outer-scope entry for later restore.
+        fn put(self: *ScopedContext, name: []const u8, sym: Symbol) std.mem.Allocator.Error!void {
+            if (self.analyzer.symbols.getIndex(name)) |idx| {
+                if (idx < self.outer_count) {
+                    try self.saved.append(self.analyzer.allocator, .{
+                        .name = name,
+                        .sym = self.analyzer.symbols.values()[idx],
+                    });
+                }
+            }
+            try self.analyzer.symbols.put(name, sym);
+        }
+
+        /// Pop all scope-local entries and restore any shadowed outer entries.
+        fn restore(self: *ScopedContext) std.mem.Allocator.Error!void {
+            while (self.analyzer.symbols.count() > self.outer_count) {
+                _ = self.analyzer.symbols.pop();
+            }
+            for (self.saved.items) |entry| {
+                try self.analyzer.symbols.put(entry.name, entry.sym);
             }
         }
-        try self.symbols.put(name, sym);
-    }
+
+        fn deinit(self: *ScopedContext) void {
+            self.saved.deinit(self.analyzer.allocator);
+        }
+    };
 
     fn analyzeRoot(self: *Analyzer) std.mem.Allocator.Error!void {
         const statements = self.tree.rootStatements(0);
@@ -123,6 +193,7 @@ const Analyzer = struct {
                 .let_statement => try self.analyzeBinding(node, stmt_index, .let_binding),
                 .input_statement => try self.analyzeBinding(node, stmt_index, .input),
                 .fn_def => try self.analyzeFnDef(node, stmt_index),
+                .piece_def => try self.analyzePieceDef(node, stmt_index),
                 else => {},
             }
         }
@@ -137,8 +208,109 @@ const Analyzer = struct {
             .{ "point", .point },
             .{ "bezier", .bezier },
             .{ "line", .line },
+            .{ "piece", .piece },
         });
         return type_map.get(text);
+    }
+
+    fn analyzePieceMembers(self: *Analyzer, member_nodes: []const ast.NodeIndex) std.mem.Allocator.Error![]const PieceMember {
+        var scope = ScopedContext.init(self);
+        defer scope.deinit();
+
+        var member_infos = std.ArrayList(PieceMember).empty;
+        defer member_infos.deinit(self.allocator);
+
+        for (member_nodes) |member_idx| {
+            const member_node = self.tree.nodes.get(member_idx);
+            const member_name = self.tree.tokenSlice(member_node.main_token);
+
+            // Members are in a lexical scope local to this piece.
+            if (scope.containsLocal(member_name)) {
+                try self.addDiag(.duplicate_binding, member_node.main_token);
+                continue;
+            }
+
+            const member_ty = try self.resolveType(member_node.data.lhs);
+            try scope.put(member_name, .{
+                .ty = member_ty,
+                .node = member_idx,
+                .kind = .let_binding,
+            });
+            try member_infos.append(self.allocator, .{
+                .name = member_name,
+                .ty = member_ty,
+            });
+        }
+
+        // Piece members do not leak to outer scope.
+        try scope.restore();
+
+        return member_infos.toOwnedSlice(self.allocator);
+    }
+
+    fn analyzePieceDef(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex) std.mem.Allocator.Error!void {
+        const piece_name = self.tree.tokenSlice(node.main_token + 1);
+
+        // Piece names share the top-level namespace with bindings and functions.
+        if (self.symbols.contains(piece_name) or self.functions.contains(piece_name) or self.pieces.contains(piece_name)) {
+            try self.addDiag(.duplicate_binding, node.main_token);
+            return;
+        }
+
+        const member_nodes = self.tree.pieceDefMembers(node_index);
+        const owned_members = try self.analyzePieceMembers(member_nodes);
+        errdefer self.allocator.free(owned_members);
+
+        try self.pieces.put(piece_name, .{
+            .members = owned_members,
+        });
+        try self.symbols.put(piece_name, .{
+            .ty = .piece,
+            .node = node_index,
+            .kind = .let_binding,
+        });
+    }
+
+    fn analyzePieceExpr(self: *Analyzer, node_index: ast.NodeIndex) std.mem.Allocator.Error!void {
+        if (self.piece_expr_infos.contains(node_index)) return;
+        const member_nodes = self.tree.pieceExprMembers(node_index);
+        const members = try self.analyzePieceMembers(member_nodes);
+        errdefer self.allocator.free(members);
+        try self.piece_expr_infos.put(node_index, .{
+            .members = members,
+        });
+    }
+
+    fn resolvePieceInfoFromSymbol(self: *const Analyzer, sym: Symbol, name: []const u8) ?*const PieceInfo {
+        if (sym.ty != .piece) return null;
+        const def_node = self.tree.nodes.get(sym.node);
+        return switch (def_node.tag) {
+            .piece_def => self.pieces.getPtr(name),
+            .let_statement, .input_statement => self.resolvePieceInfo(def_node.data.lhs),
+            else => null,
+        };
+    }
+
+    fn resolvePieceInfo(self: *const Analyzer, node_index: ast.NodeIndex) ?*const PieceInfo {
+        const node = self.tree.nodes.get(node_index);
+        return switch (node.tag) {
+            .identifier_ref => blk: {
+                const name = self.tree.tokenSlice(node.main_token);
+                if (self.pieces.getPtr(name)) |piece_info| break :blk piece_info;
+                const sym = self.symbols.get(name) orelse break :blk null;
+                break :blk self.resolvePieceInfoFromSymbol(sym, name);
+            },
+            .grouped_expression => self.resolvePieceInfo(node.data.lhs),
+            .piece_expr => self.piece_expr_infos.getPtr(node_index),
+            .fn_call => blk: {
+                const fn_name = self.tree.tokenSlice(node.main_token);
+                const fn_sig = self.functions.getPtr(fn_name) orelse break :blk null;
+                if (fn_sig.ret_ty != .piece) break :blk null;
+                if (fn_sig.piece_info) |*piece_info| break :blk piece_info;
+                break :blk null;
+            },
+            else => null,
+        };
     }
 
     fn analyzeFnDef(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex) std.mem.Allocator.Error!void {
@@ -154,14 +326,11 @@ const Analyzer = struct {
         const body_nodes = self.tree.fnDefBody(node_index);
         const return_expr = self.tree.fnDefReturn(node_index);
 
+        var scope = ScopedContext.init(self);
+        defer scope.deinit();
+
         // Build param info and add params to symbol table temporarily.
         var params = try self.allocator.alloc(ParamInfo, param_nodes.len);
-        const outer_count = self.symbols.count();
-
-        // Track outer-scope entries that get overwritten by shadowing,
-        // so we can restore them after analyzing the function body.
-        var saved = std.ArrayList(SavedEntry).empty;
-        defer saved.deinit(self.allocator);
 
         for (param_nodes, 0..) |param_idx, i| {
             const param_node = self.tree.nodes.get(param_idx);
@@ -178,40 +347,41 @@ const Analyzer = struct {
 
             // Check for duplicate within this function's scope only.
             // Params are allowed to shadow outer bindings.
-            if (self.containsLocal(param_name, outer_count)) {
+            if (scope.containsLocal(param_name)) {
                 try self.addDiag(.duplicate_binding, param_node.main_token);
                 continue;
             }
 
             // Save any outer-scope entry being shadowed.
-            try self.saveAndPut(param_name, .{ .ty = param_ty, .node = param_idx, .kind = .fn_param }, outer_count, &saved);
+            try scope.put(param_name, .{ .ty = param_ty, .node = param_idx, .kind = .fn_param });
         }
 
         // Analyze body let-statements.
         for (body_nodes) |stmt_idx| {
             const stmt_node = self.tree.nodes.get(stmt_idx);
             if (stmt_node.tag == .let_statement) {
-                try self.analyzeFnBinding(stmt_node, stmt_idx, outer_count, &saved);
+                try self.analyzeFnBinding(stmt_node, stmt_idx, &scope);
             }
         }
 
         // Analyze return expression and infer return type.
         const ret_ty = try self.resolveType(return_expr);
-
-        // Pop entries that were appended (new names not in outer scope).
-        while (self.symbols.count() > outer_count) {
-            _ = self.symbols.pop();
+        var ret_piece_info: ?PieceInfo = null;
+        if (ret_ty == .piece) {
+            if (self.resolvePieceInfo(return_expr)) |piece_info| {
+                ret_piece_info = .{
+                    .members = try self.allocator.dupe(PieceMember, piece_info.members),
+                };
+            }
         }
 
-        // Restore outer-scope entries that were overwritten by shadowing.
-        for (saved.items) |entry| {
-            try self.symbols.put(entry.name, entry.sym);
-        }
+        try scope.restore();
 
         // Register the function signature.
         try self.functions.put(fn_name, .{
             .params = params,
             .ret_ty = ret_ty,
+            .piece_info = ret_piece_info,
             .node = node_index,
         });
     }
@@ -230,19 +400,19 @@ const Analyzer = struct {
     }
 
     /// Like `analyzeBinding`, but only checks for duplicates within the
-    /// function's local scope (entries at index >= `scope_start`). This
-    /// allows function-local bindings to shadow outer-scope names.
-    fn analyzeFnBinding(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex, scope_start: usize, saved: *std.ArrayList(SavedEntry)) std.mem.Allocator.Error!void {
+    /// function's local scope. Allows function-local bindings to shadow
+    /// outer-scope names.
+    fn analyzeFnBinding(self: *Analyzer, node: ast.Node, node_index: ast.NodeIndex, scope: *ScopedContext) std.mem.Allocator.Error!void {
         const name = self.tree.tokenSlice(node.main_token + 1);
 
-        if (self.containsLocal(name, scope_start)) {
+        if (scope.containsLocal(name)) {
             try self.addDiag(.duplicate_binding, node.main_token);
             return;
         }
 
         const ty = try self.resolveType(node.data.lhs);
 
-        try self.saveAndPut(name, .{ .ty = ty, .node = node_index, .kind = .let_binding }, scope_start, saved);
+        try scope.put(name, .{ .ty = ty, .node = node_index, .kind = .let_binding });
     }
 
     fn resolveType(self: *Analyzer, node_index: ast.NodeIndex) std.mem.Allocator.Error!Type {
@@ -272,8 +442,20 @@ const Analyzer = struct {
                 const base_ty = try self.resolveType(node.data.lhs);
                 if (base_ty == .poison) break :blk2 .poison;
                 const field_name = self.tree.tokenSlice(node.main_token + 1);
-                // Map sema type to ir type for the field lookup.
-                if (base_ty == .poison) break :blk2 .poison;
+                if (base_ty == .piece) {
+                    const piece_info = self.resolvePieceInfo(node.data.lhs) orelse {
+                        try self.addDiag(.invalid_field_access, node.main_token + 1);
+                        break :blk2 .poison;
+                    };
+                    for (piece_info.members) |member| {
+                        if (std.mem.eql(u8, member.name, field_name)) {
+                            break :blk2 member.ty;
+                        }
+                    }
+                    try self.addDiag(.invalid_field_access, node.main_token + 1);
+                    break :blk2 .poison;
+                }
+                // Map sema type to ir type for non-piece field lookups.
                 const ir_base_ty = std.meta.stringToEnum(ir.Type, @tagName(base_ty)) orelse {
                     try self.addDiag(.invalid_field_access, node.main_token + 1);
                     break :blk2 .poison;
@@ -284,10 +466,13 @@ const Analyzer = struct {
                 try self.addDiag(.invalid_field_access, node.main_token + 1);
                 break :blk2 .poison;
             },
+            .piece_expr => blk3: {
+                try self.analyzePieceExpr(node_index);
+                break :blk3 .piece;
+            },
             // Structurally impossible: the parser only produces expression nodes
-            // as values in statements; root, let_statement, input_statement,
-            // fn_def, param, and return_stmt never appear here.
-            .root, .let_statement, .input_statement, .fn_def, .param, .return_stmt => unreachable,
+            // as values in statements; non-expression nodes never appear here.
+            .root, .let_statement, .input_statement, .fn_def, .piece_def, .piece_member, .param, .return_stmt => unreachable,
         };
         self.node_types[node_index] = ty;
         return ty;
@@ -402,18 +587,26 @@ pub fn analyze(allocator: std.mem.Allocator, tree: *const Ast) std.mem.Allocator
         .allocator = allocator,
         .symbols = std.StringArrayHashMap(Symbol).init(allocator),
         .functions = std.StringArrayHashMap(FnSig).init(allocator),
+        .pieces = std.StringArrayHashMap(PieceInfo).init(allocator),
+        .piece_expr_infos = std.AutoHashMap(ast.NodeIndex, PieceInfo).init(allocator),
         .node_types = node_types,
         .diagnostics = std.ArrayList(Diagnostic).empty,
     };
     errdefer a.symbols.deinit();
     errdefer a.functions.deinit();
+    errdefer deinitPieceMap(allocator, &a.pieces);
+    errdefer deinitPieceExprInfoMap(allocator, &a.piece_expr_infos);
     errdefer a.diagnostics.deinit(allocator);
 
     try a.analyzeRoot();
 
+    // Temporary piece-expression shape cache is only needed during analysis.
+    deinitPieceExprInfoMap(allocator, &a.piece_expr_infos);
+
     return .{
         .symbols = a.symbols,
         .functions = a.functions,
+        .pieces = a.pieces,
         .node_types = a.node_types,
         .diagnostics = try a.diagnostics.toOwnedSlice(allocator),
         .allocator = allocator,
@@ -1498,4 +1691,158 @@ test "analyze: field access result usable in arithmetic" {
 
     try std.testing.expect(!sem.hasErrors());
     try std.testing.expectEqual(.length, sem.symbols.get("x").?.ty);
+}
+
+test "analyze: piece definition registers piece info" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\input chest = 100mm
+        \\piece neckhole {
+        \\  top_left = point(chest, 0mm)
+        \\  top_right = point(chest, top_left.y)
+        \\}
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.piece, sem.symbols.get("neckhole").?.ty);
+
+    const info = sem.pieces.get("neckhole").?;
+    try std.testing.expectEqual(@as(usize, 2), info.members.len);
+    try std.testing.expectEqualStrings("top_left", info.members[0].name);
+    try std.testing.expectEqual(.point, info.members[0].ty);
+    try std.testing.expectEqualStrings("top_right", info.members[1].name);
+    try std.testing.expectEqual(.point, info.members[1].ty);
+}
+
+test "analyze: piece members are visible in definition order" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\piece neckhole {
+        \\  top_right = point(top_left.x, 0mm)
+        \\  top_left = point(100mm, 50mm)
+        \\}
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(@as(usize, 1), sem.diagnostics.len);
+    try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
+}
+
+test "analyze: piece members do not leak into outer scope" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\piece neckhole {
+        \\  top_left = point(0mm, 0mm)
+        \\}
+        \\let x = top_left
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.undefined_reference, sem.diagnostics[0].tag);
+}
+
+test "analyze: piece member access resolves to member type" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\piece neckhole {
+        \\  top_left = point(100mm, 50mm)
+        \\}
+        \\let x = neckhole.top_left.x
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.length, sem.symbols.get("x").?.ty);
+}
+
+test "analyze: invalid piece member access" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\piece neckhole {
+        \\  top_left = point(100mm, 50mm)
+        \\}
+        \\let x = neckhole.missing
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(sem.hasErrors());
+    try std.testing.expectEqual(.invalid_field_access, sem.diagnostics[0].tag);
+}
+
+test "analyze: fn returning anonymous piece infers piece signature" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn make_piece() {
+        \\  return piece {
+        \\    top_left = point(0mm, 0mm)
+        \\  }
+        \\}
+        \\let x = make_piece().top_left.x
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    const sig = sem.functions.get("make_piece").?;
+    try std.testing.expectEqual(.piece, sig.ret_ty);
+    try std.testing.expect(sig.piece_info != null);
+    try std.testing.expectEqual(@as(usize, 1), sig.piece_info.?.members.len);
+    try std.testing.expectEqualStrings("top_left", sig.piece_info.?.members[0].name);
+    try std.testing.expectEqual(.point, sig.piece_info.?.members[0].ty);
+    try std.testing.expectEqual(.length, sem.symbols.get("x").?.ty);
+}
+
+test "analyze: piece member access on piece-valued let from call" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn make_piece() {
+        \\  return piece {
+        \\    top_left = point(0mm, 0mm)
+        \\  }
+        \\}
+        \\let sleeve = make_piece()
+        \\let y = sleeve.top_left.y
+    ;
+
+    var tree = try parser.parse(allocator, source);
+    defer tree.deinit();
+
+    var sem = try analyze(allocator, &tree);
+    defer sem.deinit();
+
+    try std.testing.expect(!sem.hasErrors());
+    try std.testing.expectEqual(.piece, sem.symbols.get("sleeve").?.ty);
+    try std.testing.expectEqual(.length, sem.symbols.get("y").?.ty);
 }

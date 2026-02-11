@@ -8,6 +8,7 @@ pub const Type = enum(u8) {
     point,
     bezier,
     line,
+    piece,
 
     pub fn toStr(self: Type) []const u8 {
         return @tagName(self);
@@ -76,6 +77,7 @@ pub const Op = enum(u8) {
     bezier_p2,
     bezier_p3,
     bezier_p4,
+    piece_member,
 
     pub fn toStr(self: Op) []const u8 {
         return @tagName(self);
@@ -91,7 +93,7 @@ pub const Op = enum(u8) {
         return switch (self) {
             .point, .bezier, .line => true,
             .add, .sub, .mul, .div => false,
-            .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4 => false,
+            .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4, .piece_member => false,
         };
     }
 
@@ -220,6 +222,20 @@ pub const FnDef = struct {
     }
 };
 
+pub const PieceDef = struct {
+    name: []const u8,
+    members: []const Inst,
+
+    pub fn eql(a: PieceDef, b: PieceDef) bool {
+        if (!std.mem.eql(u8, a.name, b.name)) return false;
+        if (a.members.len != b.members.len) return false;
+        for (a.members, b.members) |am, bm| {
+            if (!am.eql(bm)) return false;
+        }
+        return true;
+    }
+};
+
 pub const Input = struct {
     name: []const u8,
     ty: Type,
@@ -291,6 +307,7 @@ pub const Ir = struct {
     version: u32 = 1,
     inputs: []const Input = &.{},
     functions: []const FnDef = &.{},
+    pieces: []const PieceDef = &.{},
     instructions: []const Inst,
     arena: std.heap.ArenaAllocator,
 
@@ -309,6 +326,10 @@ pub const Ir = struct {
         if (a.functions.len != b.functions.len) return false;
         for (a.functions, b.functions) |af, bf| {
             if (!af.eql(bf)) return false;
+        }
+        if (a.pieces.len != b.pieces.len) return false;
+        for (a.pieces, b.pieces) |ap, bp| {
+            if (!ap.eql(bp)) return false;
         }
         if (a.instructions.len != b.instructions.len) return false;
         for (a.instructions, b.instructions) |ai, bi| {
@@ -345,7 +366,7 @@ pub fn isTemp(name: []const u8) bool {
 // --- Tests ---
 
 test "type round-trip through string" {
-    inline for (.{ Type.f64, Type.length, Type.percentage, Type.point, Type.bezier, Type.line }) |ty| {
+    inline for (.{ Type.f64, Type.length, Type.percentage, Type.point, Type.bezier, Type.line, Type.piece }) |ty| {
         try std.testing.expectEqual(ty, Type.fromStr(ty.toStr()).?);
     }
 }

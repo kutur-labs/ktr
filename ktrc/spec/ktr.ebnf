@@ -14,6 +14,7 @@ program          = { statement } ;
 statement        = let_statement
                  | input_decl
                  | fn_def
+                 | piece_def
                  | export_stmt ;
 
 
@@ -50,6 +51,15 @@ param            = IDENT , ":" , type_name ;
 fn_body          = { let_statement } , return_stmt ;
 
 return_stmt      = "return" , expression ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Piece definitions                                                   *)
+(* ------------------------------------------------------------------ *)
+
+piece_def         = "piece" , IDENT , "{" , { piece_member } , "}" ;
+
+piece_member      = IDENT , "=" , expression ;
 
 
 (* ------------------------------------------------------------------ *)
@@ -112,11 +122,14 @@ primary_expr     = DIMENSION                         (* 100mm              *)
                  | PERCENTAGE                        (* 50%                *)
                  | NUMBER                            (* 42, 3.14           *)
                  | fn_call                           (* point(x, y)        *)
+                 | piece_expr                        (* piece { ... }      *)
                  | search_expr                       (* search (t) { ... } *)
                  | IDENT                             (* head               *)
                  | "(" , expression , ")" ;          (* grouping           *)
 
 fn_call          = IDENT , "(" , [ arg_list ] , ")" ;
+
+piece_expr       = "piece" , "{" , { piece_member } , "}" ;
 
 arg_list         = expression , { "," , expression } ;
 
@@ -131,6 +144,7 @@ type_name        = "f64"
                  | "point"
                  | "bezier"
                  | "line"
+                 | "piece"
                  | "bool" ;
 
 
@@ -168,4 +182,4 @@ COMMENT          = "//" , { ANY - NEWLINE } ;
 
 (* Keywords (reserved, cannot be used as identifiers):                *)
 (* let  input  fn  return  search  bounds  tolerance                  *)
-(* require  export  as  assert                                        *)
+(* require  export  as  assert  piece                                 *)

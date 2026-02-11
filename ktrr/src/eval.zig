@@ -27,12 +27,14 @@ pub const RuntimeValue = union(enum) {
     bezier: [4][2]f64,
     /// Straight line segment: [start, end], each [x, y] in mm.
     line: [2][2]f64,
+    /// Piece value: named members with already-evaluated runtime values.
+    piece: PieceValue,
 
     /// Extract the scalar payload. Asserts the value is a scalar.
     pub fn asScalar(self: RuntimeValue) f64 {
         return switch (self) {
             .scalar => |v| v,
-            .point, .bezier, .line => unreachable,
+            .point, .bezier, .line, .piece => unreachable,
         };
     }
 
@@ -40,7 +42,7 @@ pub const RuntimeValue = union(enum) {
     pub fn asPoint(self: RuntimeValue) [2]f64 {
         return switch (self) {
             .point => |p| p,
-            .scalar, .bezier, .line => unreachable,
+            .scalar, .bezier, .line, .piece => unreachable,
         };
     }
 
@@ -48,7 +50,7 @@ pub const RuntimeValue = union(enum) {
     pub fn asLine(self: RuntimeValue) [2][2]f64 {
         return switch (self) {
             .line => |l| l,
-            .scalar, .point, .bezier => unreachable,
+            .scalar, .point, .bezier, .piece => unreachable,
         };
     }
 
@@ -56,8 +58,24 @@ pub const RuntimeValue = union(enum) {
     pub fn asBezier(self: RuntimeValue) [4][2]f64 {
         return switch (self) {
             .bezier => |b| b,
-            .scalar, .point, .line => unreachable,
+            .scalar, .point, .line, .piece => unreachable,
         };
+    }
+};
+
+pub const PieceMemberValue = struct {
+    name: []const u8,
+    value: RuntimeValue,
+};
+
+pub const PieceValue = struct {
+    members: []const PieceMemberValue,
+
+    fn get(self: PieceValue, name: []const u8) ?RuntimeValue {
+        for (self.members) |member| {
+            if (std.mem.eql(u8, member.name, name)) return member.value;
+        }
+        return null;
     }
 };
 
@@ -81,6 +99,7 @@ pub const Result = struct {
 pub const EvalError = error{
     UndefinedReference,
     DivisionByZero,
+    UnsupportedOperation,
 } || Allocator.Error;
 
 // ─── Evaluator ──────────────────────────────────────────────────────────────
@@ -131,21 +150,45 @@ pub fn eval(gpa: Allocator, ir_data: Ir, overrides: []const InputOverride) EvalE
         });
     }
 
+    // Evaluate top-level piece blocks. Members are evaluated in a local scope
+    // with lexical fallback to outer/global bindings, then exported under
+    // qualified names (`piece.member`) and as a piece-typed binding.
+    for (ir_data.pieces) |piece_def| {
+        var piece_env = Env{};
+        const piece_scope = Scope{ .bindings = &piece_env, .parent = &scope };
+        var members = std.ArrayListUnmanaged(PieceMemberValue){};
+
+        for (piece_def.members) |inst| {
+            const value = try evalInst(ally, piece_scope, fn_map, inst);
+            try piece_env.put(ally, inst.name, value);
+
+            try members.append(ally, .{
+                .name = try ally.dupe(u8, inst.name),
+                .value = value,
+            });
+
+            const qualified_name = try std.fmt.allocPrint(ally, "{s}.{s}", .{ piece_def.name, inst.name });
+            try env.put(ally, qualified_name, value);
+            try appendUserBinding(&bindings, ally, qualified_name, inst.ty, value, false);
+        }
+
+        const piece_value = RuntimeValue{ .piece = .{
+            .members = try members.toOwnedSlice(ally),
+        } };
+        try env.put(ally, piece_def.name, piece_value);
+        try bindings.append(ally, .{
+            .name = try ally.dupe(u8, piece_def.name),
+            .ty = .piece,
+            .value = piece_value,
+            .is_input = false,
+        });
+    }
+
     // Process instructions.
     for (ir_data.instructions) |inst| {
         const value = try evalInst(ally, scope, fn_map, inst);
-
         try env.put(ally, inst.name, value);
-
-        // Only include user-defined bindings (names starting with a letter).
-        if (!isTemp(inst.name)) {
-            try bindings.append(ally, .{
-                .name = try ally.dupe(u8, inst.name),
-                .ty = inst.ty,
-                .value = value,
-                .is_input = false,
-            });
-        }
+        try appendUserBinding(&bindings, ally, inst.name, inst.ty, value, false);
     }
 
     return .{
@@ -155,6 +198,17 @@ pub fn eval(gpa: Allocator, ir_data: Ir, overrides: []const InputOverride) EvalE
 }
 
 // ─── Internal helpers ───────────────────────────────────────────────────────
+
+/// Append a user-visible binding, skipping compiler temporaries.
+fn appendUserBinding(bindings: *std.ArrayListUnmanaged(Binding), ally: Allocator, name: []const u8, ty: Type, value: RuntimeValue, is_input: bool) Allocator.Error!void {
+    if (isTemp(name)) return;
+    try bindings.append(ally, .{
+        .name = try ally.dupe(u8, name),
+        .ty = ty,
+        .value = value,
+        .is_input = is_input,
+    });
+}
 
 const Env = std.StringHashMapUnmanaged(RuntimeValue);
 const FnMap = std.StringHashMapUnmanaged(ktr_ir.FnDef);
@@ -239,6 +293,15 @@ fn evalBuiltin(scope: Scope, b: Inst.Builtin) EvalError!RuntimeValue {
         .bezier_p2 => .{ .point = (try resolveOperand(scope, b.operands[0])).asBezier()[1] },
         .bezier_p3 => .{ .point = (try resolveOperand(scope, b.operands[0])).asBezier()[2] },
         .bezier_p4 => .{ .point = (try resolveOperand(scope, b.operands[0])).asBezier()[3] },
+        .piece_member => {
+            if (b.operands.len != 2 or b.operands[1] != .ref) return error.UnsupportedOperation;
+            const piece_value = try resolveOperand(scope, b.operands[0]);
+            const member_name = b.operands[1].ref;
+            return switch (piece_value) {
+                .piece => |p| p.get(member_name) orelse error.UndefinedReference,
+                else => error.UnsupportedOperation,
+            };
+        },
     };
 }
 
@@ -273,9 +336,27 @@ fn evalCall(
     // full scope chain (which includes inputs and outer bindings).
     const fn_scope = Scope{ .bindings = &fn_env, .parent = &caller_scope };
 
+    // For piece-returning functions, collect members in a single pass.
+    var maybe_members: ?std.ArrayListUnmanaged(PieceMemberValue) =
+        if (fn_def.ret_ty == .piece) .{} else null;
+
     for (fn_def.body) |inst| {
         const value = try evalInst(ally, fn_scope, fn_map, inst);
         try fn_env.put(ally, inst.name, value);
+        if (maybe_members) |*members| {
+            if (!isTemp(inst.name)) {
+                try members.append(ally, .{
+                    .name = try ally.dupe(u8, inst.name),
+                    .value = value,
+                });
+            }
+        }
+    }
+
+    if (maybe_members) |*members| {
+        return .{ .piece = .{
+            .members = try members.toOwnedSlice(ally),
+        } };
     }
 
     return fn_scope.get(fn_def.ret) orelse error.UndefinedReference;
@@ -1195,4 +1276,111 @@ test "eval: accessor with arithmetic" {
     const x = findBinding(result.bindings, "x").?;
     try std.testing.expectEqual(Type.length, x.ty);
     try std.testing.expectEqual(@as(f64, 200.0), x.value.asScalar());
+}
+
+test "eval: top-level piece exports qualified members" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %chest : length = 900mm
+        \\
+        \\piece neckhole
+        \\  %top_left : point = point %chest 0mm
+        \\  %x : length = point_x %top_left
+        \\end
+        \\
+        \\%out : length = point_x %neckhole.top_left
+    );
+    defer result.deinit();
+
+    const qualified_member = findBinding(result.bindings, "neckhole.top_left").?;
+    try std.testing.expectEqual(Type.point, qualified_member.ty);
+    try std.testing.expectEqual(@as(f64, 900.0), qualified_member.value.asPoint()[0]);
+    try std.testing.expectEqual(@as(f64, 0.0), qualified_member.value.asPoint()[1]);
+
+    const piece_binding = findBinding(result.bindings, "neckhole").?;
+    try std.testing.expectEqual(Type.piece, piece_binding.ty);
+    try std.testing.expectEqual(@as(usize, 2), piece_binding.value.piece.members.len);
+
+    const out = findBinding(result.bindings, "out").?;
+    try std.testing.expectEqual(Type.length, out.ty);
+    try std.testing.expectEqual(@as(f64, 900.0), out.value.asScalar());
+}
+
+test "eval: piece-returning function and piece_member access" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\fn make_piece(%w : length) -> piece
+        \\  %top_left : point = point %w 50mm
+        \\end
+        \\
+        \\%sleeve : piece = call make_piece 120mm
+        \\%p : point = piece_member %sleeve %top_left
+        \\%x : length = point_x %p
+    );
+    defer result.deinit();
+
+    const sleeve = findBinding(result.bindings, "sleeve").?;
+    try std.testing.expectEqual(Type.piece, sleeve.ty);
+    try std.testing.expectEqual(@as(usize, 1), sleeve.value.piece.members.len);
+
+    const p = findBinding(result.bindings, "p").?;
+    try std.testing.expectEqual(Type.point, p.ty);
+    try std.testing.expectEqual(@as(f64, 120.0), p.value.asPoint()[0]);
+    try std.testing.expectEqual(@as(f64, 50.0), p.value.asPoint()[1]);
+
+    const x = findBinding(result.bindings, "x").?;
+    try std.testing.expectEqual(@as(f64, 120.0), x.value.asScalar());
+}
+
+test "eval: piece-returning function captures caller scope" {
+    const ally = std.testing.allocator;
+    var result = try evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\input %offset : length = 20mm
+        \\
+        \\fn make_piece(%w : length) -> piece
+        \\  %0 : length = add %w %offset
+        \\  %top_left : point = point %0 0mm
+        \\end
+        \\
+        \\%piece : piece = call make_piece 80mm
+        \\%p : point = piece_member %piece %top_left
+        \\%x : length = point_x %p
+    );
+    defer result.deinit();
+
+    const x = findBinding(result.bindings, "x").?;
+    try std.testing.expectEqual(Type.length, x.ty);
+    try std.testing.expectEqual(@as(f64, 100.0), x.value.asScalar());
+}
+
+test "eval: piece_member missing field" {
+    const ally = std.testing.allocator;
+    const result = evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\fn make_piece() -> piece
+        \\  %top_left : point = point 0mm 0mm
+        \\end
+        \\
+        \\%sleeve : piece = call make_piece
+        \\%p : point = piece_member %sleeve %missing
+    );
+    try std.testing.expectError(error.UndefinedReference, result);
+}
+
+test "eval: piece_member on non-piece value is unsupported" {
+    const ally = std.testing.allocator;
+    const result = evalSource(ally,
+        \\# ktr-ir v1
+        \\
+        \\%x : length = 10mm
+        \\%p : point = piece_member %x %top_left
+    );
+    try std.testing.expectError(error.UnsupportedOperation, result);
 }

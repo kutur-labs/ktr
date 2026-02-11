@@ -19,6 +19,8 @@ pub const Token = struct {
         @"fn",
         /// `return`
         @"return",
+        /// `piece`
+        piece,
 
         // ------------------------------
         // Identifiers
@@ -123,6 +125,7 @@ pub const Lexer = struct {
         .{ "input", .input },
         .{ "fn", .@"fn" },
         .{ "return", .@"return" },
+        .{ "piece", .piece },
     });
 
     fn readIdentifier(self: *Lexer) Token {
@@ -435,6 +438,26 @@ test "lexer: return keyword" {
 
     try std.testing.expectEqual(lex.next().tag, .@"return");
     try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: piece keyword" {
+    var lex = Lexer.init("piece bodice");
+
+    try std.testing.expectEqual(lex.next().tag, .piece);
+    try std.testing.expectEqual(lex.next().tag, .identifier);
+    try std.testing.expectEqual(lex.next().tag, .eof);
+}
+
+test "lexer: piece as identifier prefix" {
+    var lex = Lexer.init("let piece_name = 5");
+
+    try std.testing.expectEqual(lex.next().tag, .let);
+    const ident = lex.next();
+    try std.testing.expectEqual(ident.tag, .identifier);
+    try std.testing.expectEqualStrings("piece_name", lex.lexeme(ident));
+    try std.testing.expectEqual(lex.next().tag, .equal);
+    try std.testing.expectEqual(lex.next().tag, .number_literal);
     try std.testing.expectEqual(lex.next().tag, .eof);
 }
 

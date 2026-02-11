@@ -106,6 +106,17 @@ pub const Node = struct {
         ///    body_stmt_0, ..., body_stmt_M-1, return_expr_node]
         fn_def,
 
+        /// `piece <name> { <members> }`.
+        /// main_token: `piece` token (name = main_token + 1).
+        /// lhs: start index into extra_data. rhs: end index (exclusive).
+        /// extra_data[lhs..rhs] contains NodeIndex values of piece_member nodes.
+        piece_def,
+
+        /// Piece member definition: `<name> = <expr>`.
+        /// main_token: identifier token (member name).
+        /// lhs: value expression node index. rhs: unused (0).
+        piece_member,
+
         /// Typed parameter: `name : type`.
         /// main_token: identifier (param name).
         /// lhs: token index of type_name. rhs: unused (0).
@@ -154,6 +165,12 @@ pub const Node = struct {
         /// lhs: start index into extra_data. rhs: end index (exclusive).
         /// extra_data[lhs..rhs] contains NodeIndex values for each argument.
         fn_call,
+
+        /// Anonymous piece expression: `piece { <members> }`.
+        /// main_token: `piece` token.
+        /// lhs: start index into extra_data. rhs: end index (exclusive).
+        /// extra_data[lhs..rhs] contains NodeIndex values of piece_member nodes.
+        piece_expr,
 
         // ------------------------------
         // Grouping
@@ -246,6 +263,18 @@ pub const Ast = struct {
         const data = self.nodes.items(.data)[fn_def_index];
         const extra = self.extra_data[data.lhs..data.rhs];
         return extra[extra.len - 1];
+    }
+
+    /// Returns the member node indices for a `piece_def` node.
+    pub fn pieceDefMembers(self: Ast, piece_def_index: NodeIndex) []const NodeIndex {
+        const data = self.nodes.items(.data)[piece_def_index];
+        return self.extra_data[data.lhs..data.rhs];
+    }
+
+    /// Returns the member node indices for a `piece_expr` node.
+    pub fn pieceExprMembers(self: Ast, piece_expr_index: NodeIndex) []const NodeIndex {
+        const data = self.nodes.items(.data)[piece_expr_index];
+        return self.extra_data[data.lhs..data.rhs];
     }
 
     pub fn deinit(self: *Ast) void {

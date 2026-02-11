@@ -39,45 +39,7 @@ fn writeBindingsJson(bindings: []const eval_mod.Binding) error{OutOfMemory}![]u8
         jw.write(@tagName(binding.ty)) catch return error.OutOfMemory;
 
         jw.objectField("value") catch return error.OutOfMemory;
-        switch (binding.value) {
-            .scalar => |v| writeJsonNumber(&jw, v) catch return error.OutOfMemory,
-            .point => |p| {
-                jw.beginObject() catch return error.OutOfMemory;
-                jw.objectField("x") catch return error.OutOfMemory;
-                writeJsonNumber(&jw, p[0]) catch return error.OutOfMemory;
-                jw.objectField("y") catch return error.OutOfMemory;
-                writeJsonNumber(&jw, p[1]) catch return error.OutOfMemory;
-                jw.endObject() catch return error.OutOfMemory;
-            },
-            .bezier => |pts| {
-                jw.beginObject() catch return error.OutOfMemory;
-                const labels = [_][]const u8{ "p1", "p2", "p3", "p4" };
-                for (pts, labels) |pt, label| {
-                    jw.objectField(label) catch return error.OutOfMemory;
-                    jw.beginObject() catch return error.OutOfMemory;
-                    jw.objectField("x") catch return error.OutOfMemory;
-                    writeJsonNumber(&jw, pt[0]) catch return error.OutOfMemory;
-                    jw.objectField("y") catch return error.OutOfMemory;
-                    writeJsonNumber(&jw, pt[1]) catch return error.OutOfMemory;
-                    jw.endObject() catch return error.OutOfMemory;
-                }
-                jw.endObject() catch return error.OutOfMemory;
-            },
-            .line => |pts| {
-                jw.beginObject() catch return error.OutOfMemory;
-                const labels = [_][]const u8{ "start", "end" };
-                for (pts, labels) |pt, label| {
-                    jw.objectField(label) catch return error.OutOfMemory;
-                    jw.beginObject() catch return error.OutOfMemory;
-                    jw.objectField("x") catch return error.OutOfMemory;
-                    writeJsonNumber(&jw, pt[0]) catch return error.OutOfMemory;
-                    jw.objectField("y") catch return error.OutOfMemory;
-                    writeJsonNumber(&jw, pt[1]) catch return error.OutOfMemory;
-                    jw.endObject() catch return error.OutOfMemory;
-                }
-                jw.endObject() catch return error.OutOfMemory;
-            },
-        }
+        writeRuntimeValueJson(&jw, binding.value) catch return error.OutOfMemory;
 
         if (binding.ty == .length) {
             jw.objectField("unit") catch return error.OutOfMemory;
@@ -95,6 +57,48 @@ fn writeBindingsJson(bindings: []const eval_mod.Binding) error{OutOfMemory}![]u8
     return alloc_writer.toOwnedSlice() catch return error.OutOfMemory;
 }
 
+fn writePointJson(jw: *std.json.Stringify, pt: [2]f64) std.json.Stringify.Error!void {
+    try jw.beginObject();
+    try jw.objectField("x");
+    try writeJsonNumber(jw, pt[0]);
+    try jw.objectField("y");
+    try writeJsonNumber(jw, pt[1]);
+    try jw.endObject();
+}
+
+fn writeRuntimeValueJson(jw: *std.json.Stringify, value: eval_mod.RuntimeValue) std.json.Stringify.Error!void {
+    switch (value) {
+        .scalar => |v| try writeJsonNumber(jw, v),
+        .point => |p| try writePointJson(jw, p),
+        .bezier => |pts| {
+            try jw.beginObject();
+            const labels = [_][]const u8{ "p1", "p2", "p3", "p4" };
+            for (pts, labels) |pt, label| {
+                try jw.objectField(label);
+                try writePointJson(jw, pt);
+            }
+            try jw.endObject();
+        },
+        .line => |pts| {
+            try jw.beginObject();
+            const labels = [_][]const u8{ "start", "end" };
+            for (pts, labels) |pt, label| {
+                try jw.objectField(label);
+                try writePointJson(jw, pt);
+            }
+            try jw.endObject();
+        },
+        .piece => |p| {
+            try jw.beginObject();
+            for (p.members) |member| {
+                try jw.objectField(member.name);
+                try writeRuntimeValueJson(jw, member.value);
+            }
+            try jw.endObject();
+        },
+    }
+}
+
 /// Write a f64 as a JSON number. Integer-valued floats are emitted without
 /// a decimal point (e.g. `100` not `100.0` or `1e2`).
 fn writeJsonNumber(jw: *std.json.Stringify, value: f64) std.json.Stringify.Error!void {
@@ -103,12 +107,7 @@ fn writeJsonNumber(jw: *std.json.Stringify, value: f64) std.json.Stringify.Error
 
 // ─── Override storage ───────────────────────────────────────────────────────
 
-const Override = struct {
-    name: []const u8,
-    value: f64,
-};
-
-var override_list = std.ArrayList(Override).empty;
+var override_list = std.ArrayList(eval_mod.InputOverride).empty;
 
 // ─── Exported WASM API ──────────────────────────────────────────────────────
 
@@ -171,17 +170,6 @@ export fn eval_ir(input_ptr: usize, input_len: usize) i32 {
     const raw: [*]const u8 = @ptrFromInt(input_ptr);
     const source = raw[0..input_len];
 
-    // Build overrides slice from the global list.
-    var eval_overrides = std.ArrayList(eval_mod.InputOverride).empty;
-    defer eval_overrides.deinit(allocator);
-
-    for (override_list.items) |ov| {
-        eval_overrides.append(allocator, .{
-            .name = ov.name,
-            .value = ov.value,
-        }) catch return -1;
-    }
-
     // Parse IR.
     var ir_data = ktr_ir.parse(allocator, source) catch {
         const msg = "invalid .ktrir input";
@@ -191,10 +179,11 @@ export fn eval_ir(input_ptr: usize, input_len: usize) i32 {
     defer ir_data.deinit();
 
     // Evaluate.
-    var result = eval_mod.eval(allocator, ir_data, eval_overrides.items) catch |err| {
+    var result = eval_mod.eval(allocator, ir_data, override_list.items) catch |err| {
         const msg: []const u8 = switch (err) {
             error.UndefinedReference => "undefined reference",
             error.DivisionByZero => "division by zero",
+            error.UnsupportedOperation => "unsupported operation",
             error.OutOfMemory => return -1,
         };
         error_buf = allocator.dupe(u8, msg) catch null;

@@ -30,7 +30,7 @@ fn opToInfix(op: Op) []const u8 {
         .mul => " * ",
         .div => " / ",
         .point, .bezier, .line => unreachable,
-        .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4 => unreachable,
+        .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4, .piece_member => unreachable,
     };
 }
 
@@ -83,7 +83,7 @@ fn opPrecedence(op: Op) u8 {
         .add, .sub => 1,
         .mul, .div => 2,
         .point, .bezier, .line => unreachable,
-        .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4 => unreachable,
+        .point_x, .point_y, .line_p1, .line_p2, .bezier_p1, .bezier_p2, .bezier_p3, .bezier_p4, .piece_member => unreachable,
     };
 }
 
@@ -130,7 +130,13 @@ const Decompiler = struct {
     /// constructor ops use `name(arg, ...)` syntax;
     /// infix ops use `lhs op rhs` syntax.
     fn writeBuiltinInline(self: *const Decompiler, writer: anytype, b: Inst.Builtin, parent_op: ?Op, is_rhs: bool) @TypeOf(writer).Error!void {
-        if (b.op.isAccessor()) {
+        if (b.op == .piece_member) {
+            std.debug.assert(b.operands.len == 2);
+            std.debug.assert(b.operands[1] == .ref);
+            try self.writeExpr(writer, b.operands[0], null, false);
+            try writer.writeByte('.');
+            try writer.writeAll(b.operands[1].ref);
+        } else if (b.op.isAccessor()) {
             try self.writeExpr(writer, b.operands[0], null, false);
             try writer.writeByte('.');
             try writer.writeAll(b.op.accessorField().?);
@@ -222,6 +228,21 @@ fn writeInstructions(dc: *const Decompiler, instructions: []const Inst, writer: 
     }
 }
 
+/// Write piece member instructions as source-level member assignments (`name = expr`).
+/// Single-use temps are inlined and omitted from output.
+fn writePieceMembers(dc: *const Decompiler, members: []const Inst, writer: anytype) !void {
+    for (members) |inst| {
+        if (dc.isSingleUseTemp(inst.name)) continue;
+        try writer.print("\n  {s} = ", .{inst.name});
+        switch (inst.rhs) {
+            .constant => |v| try writeKtrValue(writer, v, inst.ty),
+            .copy => |name| try writer.writeAll(name),
+            .builtin => |b| try dc.writeBuiltinInline(writer, b, null, false),
+            .call => |c| try dc.writeCallInline(writer, c),
+        }
+    }
+}
+
 /// Reconstruct `.ktr` source from an `Ir`.
 ///
 /// Input entries are emitted as `input name = value`. Instructions that are
@@ -258,6 +279,15 @@ pub fn decompile(allocator: std.mem.Allocator, ir_data: Ir, writer: anytype) !vo
         // Build a scoped decompiler for the function body.
         var fn_dc = try Decompiler.init(allocator, fn_def.body);
         defer fn_dc.deinit();
+
+        if (fn_def.ret_ty == .piece) {
+            // Piece-returning functions lower directly to member instructions.
+            // Reconstruct as `return piece { ... }` in source.
+            try writer.writeAll("\n  return piece {");
+            try writePieceMembers(&fn_dc, fn_def.body, writer);
+            try writer.writeAll("\n  }\n}");
+            continue;
+        }
 
         // Determine if the ret binding should be inlined into the return expression.
         // Only inline if it's a compiler-generated temp.
@@ -301,10 +331,22 @@ pub fn decompile(allocator: std.mem.Allocator, ir_data: Ir, writer: anytype) !vo
         try writer.writeAll("\n}");
     }
 
+    // Emit piece definitions.
+    for (ir_data.pieces) |piece_def| {
+        if (!first) try writer.writeByte('\n');
+        first = false;
+
+        try writer.print("piece {s} {{", .{piece_def.name});
+        var piece_dc = try Decompiler.init(allocator, piece_def.members);
+        defer piece_dc.deinit();
+        try writePieceMembers(&piece_dc, piece_def.members, writer);
+        try writer.writeAll("\n}");
+    }
+
     try writeInstructions(&dc, ir_data.instructions, writer, &first);
 
     // Trailing newline if there was any output.
-    const has_content = ir_data.inputs.len > 0 or ir_data.functions.len > 0 or ir_data.instructions.len > 0;
+    const has_content = ir_data.inputs.len > 0 or ir_data.functions.len > 0 or ir_data.pieces.len > 0 or ir_data.instructions.len > 0;
     if (has_content) {
         try writer.writeByte('\n');
     }
@@ -940,4 +982,89 @@ test "decompile roundtrip: bezier.point3 field access" {
 
 test "decompile roundtrip: field access in arithmetic" {
     try expectDecompileRoundtrip("let p = point(100mm, 50mm)\nlet x = p.x * 2");
+}
+
+test "decompile: piece block" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const piece_members = try ally.alloc(Inst, 2);
+    piece_members[0] = .{
+        .name = try ally.dupe(u8, "top_left"),
+        .ty = .point,
+        .rhs = .{ .builtin = .{
+            .op = .point,
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .literal = .{ .number = 100.0, .unit = .mm } },
+                Operand{ .literal = .{ .number = 50.0, .unit = .mm } },
+            }),
+        } },
+    };
+    piece_members[1] = .{
+        .name = try ally.dupe(u8, "x"),
+        .ty = .length,
+        .rhs = .{ .builtin = .{
+            .op = .point_x,
+            .operands = try ally.dupe(Operand, &.{
+                Operand{ .ref = try ally.dupe(u8, "top_left") },
+            }),
+        } },
+    };
+
+    const pieces = try ally.alloc(ir.PieceDef, 1);
+    pieces[0] = .{
+        .name = try ally.dupe(u8, "neckhole"),
+        .members = piece_members,
+    };
+
+    var ir_data = Ir{
+        .pieces = pieces,
+        .instructions = &.{},
+        .arena = arena,
+    };
+    defer ir_data.deinit();
+
+    const output = try decompileToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\piece neckhole {
+        \\  top_left = point(100mm, 50mm)
+        \\  x = top_left.x
+        \\}
+        \\
+    , output);
+}
+
+test "decompile roundtrip: piece and qualified access" {
+    try expectDecompileRoundtrip(
+        \\piece neckhole {
+        \\  top_left = point(100mm, 50mm)
+        \\}
+        \\let x = neckhole.top_left.x
+    );
+}
+
+test "decompile roundtrip: piece-returning fn and dynamic member access" {
+    try expectDecompileRoundtrip(
+        \\fn make_piece() {
+        \\  return piece {
+        \\    top_left = point(0mm, 0mm)
+        \\  }
+        \\}
+        \\let x = make_piece().top_left.x
+    );
+}
+
+test "decompile roundtrip: piece-valued let member chaining" {
+    try expectDecompileRoundtrip(
+        \\fn make_piece() {
+        \\  return piece {
+        \\    top_left = point(0mm, 0mm)
+        \\  }
+        \\}
+        \\let sleeve = make_piece()
+        \\let y = sleeve.top_left.y
+    );
 }

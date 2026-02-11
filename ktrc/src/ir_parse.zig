@@ -8,6 +8,7 @@ const Type = ir.Type;
 const Op = ir.Op;
 const Operand = ir.Operand;
 const Input = ir.Input;
+const PieceDef = ir.PieceDef;
 
 pub const Error = error{
     InvalidFormat,
@@ -168,6 +169,7 @@ fn parseFnBlock(ally: std.mem.Allocator, sig_line: []const u8, iter: *std.mem.Sp
     // Parse body lines until `ret` or `end`.
     var body_insts = std.ArrayListUnmanaged(Inst){};
     var ret_name: ?[]const u8 = null;
+    const is_piece_return_fn = ret_ty == .piece;
 
     while (iter.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
@@ -178,6 +180,7 @@ fn parseFnBlock(ally: std.mem.Allocator, sig_line: []const u8, iter: *std.mem.Sp
 
         // Check for `ret %name`.
         if (std.mem.startsWith(u8, line, "ret ")) {
+            if (is_piece_return_fn or ret_name != null) return error.InvalidFormat;
             const ref = std.mem.trim(u8, line["ret ".len..], " \t");
             ret_name = try parseName(ally, ref);
             continue;
@@ -199,7 +202,37 @@ fn parseFnBlock(ally: std.mem.Allocator, sig_line: []const u8, iter: *std.mem.Sp
         .params = try params.toOwnedSlice(ally),
         .ret_ty = ret_ty,
         .body = try body_insts.toOwnedSlice(ally),
-        .ret = ret_name orelse return error.InvalidFormat,
+        .ret = if (is_piece_return_fn)
+            try ally.dupe(u8, "")
+        else
+            ret_name orelse return error.InvalidFormat,
+    };
+}
+
+/// Parse a `piece` block from the line iterator.
+/// The `sig_line` is the first line: `piece <name>`.
+fn parsePieceBlock(ally: std.mem.Allocator, sig_line: []const u8, iter: *std.mem.SplitIterator(u8, .scalar)) Error!PieceDef {
+    const name = std.mem.trim(u8, sig_line["piece ".len..], " \t");
+    if (name.len == 0) return error.InvalidFormat;
+
+    var members = std.ArrayListUnmanaged(Inst){};
+    while (iter.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+        if (std.mem.eql(u8, line, "end")) break;
+
+        const lhs = try parseDeclLhs(ally, line);
+        const rhs = try parseRhs(ally, lhs.rhs_text);
+        try members.append(ally, .{
+            .name = lhs.name,
+            .ty = lhs.ty,
+            .rhs = rhs,
+        });
+    }
+
+    return .{
+        .name = try ally.dupe(u8, name),
+        .members = try members.toOwnedSlice(ally),
     };
 }
 
@@ -214,6 +247,7 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
 
     var inputs: std.ArrayListUnmanaged(Input) = .{};
     var functions: std.ArrayListUnmanaged(ir.FnDef) = .{};
+    var pieces: std.ArrayListUnmanaged(PieceDef) = .{};
     var instructions: std.ArrayListUnmanaged(Inst) = .{};
     var version: u32 = 1;
     var header_seen = false;
@@ -261,6 +295,13 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
             continue;
         }
 
+        // Piece definition: `piece name`
+        if (std.mem.startsWith(u8, line, "piece ")) {
+            const piece_def = try parsePieceBlock(ally, line, &iter);
+            try pieces.append(ally, piece_def);
+            continue;
+        }
+
         // Instruction line: `%<name> : <type> = <rhs>`
         const lhs = try parseDeclLhs(ally, line);
         const rhs = try parseRhs(ally, lhs.rhs_text);
@@ -276,6 +317,7 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8) Error!Ir {
         .version = version,
         .inputs = try inputs.toOwnedSlice(ally),
         .functions = try functions.toOwnedSlice(ally),
+        .pieces = try pieces.toOwnedSlice(ally),
         .instructions = try instructions.toOwnedSlice(ally),
         .arena = arena,
     };
@@ -710,6 +752,41 @@ test "parse: fn_def no params" {
     try std.testing.expectEqual(Type.f64, fn_def.ret_ty);
 }
 
+test "parse: piece-returning fn has no ret instruction" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\fn make_piece() -> piece
+        \\  %top_left : point = point 0mm 0mm
+        \\end
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.functions.len);
+    const fn_def = result.functions[0];
+    try std.testing.expectEqualStrings("make_piece", fn_def.name);
+    try std.testing.expectEqual(Type.piece, fn_def.ret_ty);
+    try std.testing.expectEqualStrings("", fn_def.ret);
+    try std.testing.expectEqual(@as(usize, 1), fn_def.body.len);
+}
+
+test "parse: piece-returning fn rejects ret instruction" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\fn make_piece() -> piece
+        \\  %top_left : point = point 0mm 0mm
+        \\  ret %top_left
+        \\end
+    ;
+
+    try std.testing.expectError(error.InvalidFormat, parse(allocator, source));
+}
+
 test "parse: call instruction" {
     const allocator = std.testing.allocator;
     const source =
@@ -783,6 +860,106 @@ test "parse: fn_def with body and call" {
     try std.testing.expectEqualStrings("double", result.functions[0].name);
     switch (result.instructions[0].rhs) {
         .call => |c| try std.testing.expectEqualStrings("double", c.func),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: piece block" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\piece neckhole
+        \\  %top_left : point = point 100mm 50mm
+        \\  %x : length = point_x %top_left
+        \\end
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.pieces.len);
+    try std.testing.expectEqualStrings("neckhole", result.pieces[0].name);
+    try std.testing.expectEqual(@as(usize, 2), result.pieces[0].members.len);
+    try std.testing.expectEqualStrings("top_left", result.pieces[0].members[0].name);
+    try std.testing.expectEqual(Type.point, result.pieces[0].members[0].ty);
+}
+
+test "parse: qualified piece member reference" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\piece neckhole
+        \\  %top_left : point = point 100mm 50mm
+        \\end
+        \\
+        \\%x : length = point_x %neckhole.top_left
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.pieces.len);
+    try std.testing.expectEqual(@as(usize, 1), result.instructions.len);
+
+    const inst = result.instructions[0];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.length, inst.ty);
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point_x, b.op);
+            try std.testing.expectEqual(@as(usize, 1), b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("neckhole.top_left", b.operands[0].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "parse: piece_member chain from piece-typed binding" {
+    const allocator = std.testing.allocator;
+    const source =
+        \\# ktr-ir v1
+        \\
+        \\fn make_piece() -> piece
+        \\  %top_left : point = point 100mm 50mm
+        \\end
+        \\
+        \\%sleeve : piece = call make_piece
+        \\%0 : point = piece_member %sleeve %top_left
+        \\%y : length = point_y %0
+    ;
+
+    var result = try parse(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.functions.len);
+    try std.testing.expectEqual(@as(usize, 3), result.instructions.len);
+
+    const piece_member_inst = result.instructions[1];
+    try std.testing.expectEqualStrings("0", piece_member_inst.name);
+    try std.testing.expectEqual(Type.point, piece_member_inst.ty);
+    switch (piece_member_inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.piece_member, b.op);
+            try std.testing.expectEqual(@as(usize, 2), b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("sleeve", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("top_left", b.operands[1].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const y_inst = result.instructions[2];
+    try std.testing.expectEqualStrings("y", y_inst.name);
+    switch (y_inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point_y, b.op);
+            try std.testing.expectEqual(@as(usize, 1), b.operands.len);
+            try std.testing.expectEqualStrings("0", b.operands[0].ref);
+        },
         else => return error.TestUnexpectedResult,
     }
 }

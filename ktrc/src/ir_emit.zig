@@ -6,6 +6,7 @@ const Value = ir.Value;
 const Type = ir.Type;
 const Operand = ir.Operand;
 const Input = ir.Input;
+const PieceDef = ir.PieceDef;
 
 /// Write a numeric value with optional unit suffix.
 fn writeValue(writer: anytype, value: Value) !void {
@@ -48,11 +49,24 @@ fn emitInst(writer: anytype, inst: Inst) !void {
     try writer.writeByte('\n');
 }
 
+/// Emit a top-level `piece` block:
+/// piece <name>
+///   %member : type = ...
+/// end
+fn emitPiece(writer: anytype, piece_def: PieceDef) !void {
+    try writer.print("piece {s}\n", .{piece_def.name});
+    for (piece_def.members) |member_inst| {
+        try writer.writeAll("  ");
+        try emitInst(writer, member_inst);
+    }
+    try writer.writeAll("end\n");
+}
+
 /// Serialize an `Ir` to the canonical `.ktrir` text format.
 pub fn emit(ir_data: Ir, writer: anytype) !void {
     try writer.print("# ktr-ir v{d}\n", .{ir_data.version});
 
-    const has_content = ir_data.inputs.len > 0 or ir_data.functions.len > 0 or ir_data.instructions.len > 0;
+    const has_content = ir_data.inputs.len > 0 or ir_data.functions.len > 0 or ir_data.pieces.len > 0 or ir_data.instructions.len > 0;
     if (has_content) {
         try writer.writeByte('\n');
     }
@@ -63,7 +77,7 @@ pub fn emit(ir_data: Ir, writer: anytype) !void {
         try writer.writeByte('\n');
     }
 
-    if (ir_data.inputs.len > 0 and (ir_data.functions.len > 0 or ir_data.instructions.len > 0)) {
+    if (ir_data.inputs.len > 0 and (ir_data.functions.len > 0 or ir_data.pieces.len > 0 or ir_data.instructions.len > 0)) {
         try writer.writeByte('\n');
     }
 
@@ -82,11 +96,22 @@ pub fn emit(ir_data: Ir, writer: anytype) !void {
             try emitInst(writer, body_inst);
         }
 
-        // ret %return_name
-        try writer.print("  ret %{s}\n", .{fn_def.ret});
+        if (fn_def.ret_ty == .piece) {
+            std.debug.assert(fn_def.ret.len == 0);
+        } else {
+            // ret %return_name
+            try writer.print("  ret %{s}\n", .{fn_def.ret});
+        }
         try writer.writeAll("end\n");
 
-        if (fi + 1 < ir_data.functions.len or ir_data.instructions.len > 0) {
+        if (fi + 1 < ir_data.functions.len or ir_data.pieces.len > 0 or ir_data.instructions.len > 0) {
+            try writer.writeByte('\n');
+        }
+    }
+
+    for (ir_data.pieces, 0..) |piece_def, pi| {
+        try emitPiece(writer, piece_def);
+        if (pi + 1 < ir_data.pieces.len or ir_data.instructions.len > 0) {
             try writer.writeByte('\n');
         }
     }
@@ -488,6 +513,70 @@ test "roundtrip: bezier emit then parse" {
     );
 }
 
+test "emit: piece block" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    const ally = arena.allocator();
+
+    const members = try ally.alloc(ir.Inst, 2);
+    members[0] = .{
+        .name = try ally.dupe(u8, "top_left"),
+        .ty = .point,
+        .rhs = .{ .builtin = .{
+            .op = .point,
+            .operands = try ally.dupe(ir.Operand, &.{
+                ir.Operand{ .literal = .{ .number = 0.0, .unit = .mm } },
+                ir.Operand{ .literal = .{ .number = 0.0, .unit = .mm } },
+            }),
+        } },
+    };
+    members[1] = .{
+        .name = try ally.dupe(u8, "x"),
+        .ty = .length,
+        .rhs = .{ .builtin = .{
+            .op = .point_x,
+            .operands = try ally.dupe(ir.Operand, &.{
+                ir.Operand{ .ref = try ally.dupe(u8, "top_left") },
+            }),
+        } },
+    };
+
+    const pieces = try ally.alloc(ir.PieceDef, 1);
+    pieces[0] = .{
+        .name = try ally.dupe(u8, "neckhole"),
+        .members = members,
+    };
+
+    var ir_data = ir.Ir{
+        .pieces = pieces,
+        .instructions = &.{},
+        .arena = arena,
+    };
+    defer ir_data.deinit();
+
+    const output = try emitToString(allocator, ir_data);
+    defer allocator.free(output);
+
+    try std.testing.expectEqualStrings(
+        \\# ktr-ir v1
+        \\
+        \\piece neckhole
+        \\  %top_left : point = point 0mm 0mm
+        \\  %x : length = point_x %top_left
+        \\end
+        \\
+    , output);
+}
+
+test "roundtrip: piece emit then parse" {
+    try expectEmitRoundtrip(
+        \\piece neckhole {
+        \\  top_left = point(100mm, 50mm)
+        \\}
+        \\let x = neckhole.top_left.x
+    );
+}
+
 test "emit: line builtin" {
     const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -590,6 +679,17 @@ test "roundtrip: fn param shadows outer binding" {
         \\input head = 100mm
         \\fn scale(head: f64) { return head * 2 }
         \\let y = scale(3)
+    );
+}
+
+test "roundtrip: piece-returning fn emits no ret" {
+    try expectEmitRoundtrip(
+        \\fn make_piece() {
+        \\  return piece {
+        \\    top_left = point(0mm, 0mm)
+        \\  }
+        \\}
+        \\let x = make_piece().top_left.x
     );
 }
 

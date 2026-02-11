@@ -1,6 +1,6 @@
 ---
 import MainLayout from "../layouts/main-layout.astro";
-import tshirtKtr from "./tshirt.ktr?raw";
+import tshirtKtr from "./tshirt2.ktr?raw";
 import petalKtr from "./petal.ktr?raw";
 const sources = { tshirt: tshirtKtr, petal: petalKtr };
 ---
@@ -18,7 +18,7 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
           class="flex items-center justify-between px-3 h-7 border-b border-border shrink-0"
         >
           <div class="flex items-center gap-1.5">
-            <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
               <button
                 id="tab-tshirt"
                 class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary"
@@ -161,15 +161,35 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
           </div>
           <div class="flex items-center gap-4">
             <button
-              id="toggle-visual"
-              class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary"
-              >Visual</button
-            >
-            <button
-              id="toggle-text"
+              id="toggle-debug"
               class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50"
-              >Text</button
+              >Debug</button
             >
+
+            <div class="flex items-center gap-2">
+              <button
+                id="toggle-layout-cut"
+                class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary"
+                >Cut</button
+              >
+              <button
+                id="toggle-layout-assembled"
+                class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50"
+                >Preview</button
+              >
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                id="toggle-visual"
+                class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary"
+                >Visual</button
+              >
+              <button
+                id="toggle-text"
+                class="py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50"
+                >Text</button
+              >
+            </div>
           </div>
         </div>
         <div
@@ -383,6 +403,7 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
       keywords: [
         "input",
         "fn",
+        "piece",
         "let",
         "return",
         "require",
@@ -445,7 +466,10 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
           [/%[a-zA-Z_]\w*/, "variable"],
           [/%\d+/, "variable"],
           [/\b(length|percentage|f64|point|bezier|line|bool)\b/, "type"],
-          [/\b(add|sub|mul|div|point|bezier|line|point_x|point_y|line_p1|line_p2|bezier_p1|bezier_p2|bezier_p3|bezier_p4)\b(?=\s)/, "keyword.other"],
+          [
+            /\b(add|sub|mul|div|point|bezier|line|point_x|point_y|line_p1|line_p2|bezier_p1|bezier_p2|bezier_p3|bezier_p4)\b(?=\s)/,
+            "keyword.other",
+          ],
           [/\b\d+(\.\d+)?(mm|cm)\b/, "number.unit"],
           [/\b\d+\.\d+\b/, "number.float"],
           [/\b\d+\b/, "number"],
@@ -482,6 +506,10 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
         "editor.background": "#00000000",
         "editor.foreground": "#3D2323",
         "editor.lineHighlightBackground": "#00000006",
+        "editorStickyScroll.background": "#FDF8F6F2",
+        "editorStickyScrollHover.background": "#F5EEEBF5",
+        "editorStickyScroll.border": "#3D232318",
+        "editorStickyScroll.shadow": "#00000014",
         "editorLineNumber.foreground": "#99888866",
         "editorLineNumber.activeForeground": "#99888899",
         "editorCursor.foreground": "#C41E3A",
@@ -522,6 +550,10 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
         "editor.background": "#00000000",
         "editor.foreground": "#E0D6C8",
         "editor.lineHighlightBackground": "#FFFFFF06",
+        "editorStickyScroll.background": "#1F1212F2",
+        "editorStickyScrollHover.background": "#291818F5",
+        "editorStickyScroll.border": "#E0D6C815",
+        "editorStickyScroll.shadow": "#00000055",
         "editorLineNumber.foreground": "#ABB2BF44",
         "editorLineNumber.activeForeground": "#ABB2BF77",
         "editorCursor.foreground": "#D66A57",
@@ -591,6 +623,7 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
       hover: { enabled: true, above: true },
       lightbulb: { enabled: "off" },
       codeLens: false,
+      stickyScroll: { enabled: true },
     };
 
     // ── Create editors ────────────────────────────────────────────────────────
@@ -689,6 +722,11 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
     var textOutput = document.getElementById("text-output");
     var toggleVisualBtn = document.getElementById("toggle-visual");
     var toggleTextBtn = document.getElementById("toggle-text");
+    var toggleLayoutAssembledBtn = document.getElementById(
+      "toggle-layout-assembled",
+    );
+    var toggleLayoutCutBtn = document.getElementById("toggle-layout-cut");
+    var toggleDebugBtn = document.getElementById("toggle-debug");
     var downloadSvgBtn = document.getElementById("download-svg");
 
     // Guard: prevents programmatic setValue from triggering the other direction.
@@ -700,6 +738,10 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
 
     // Output mode: "visual" (default) or "text".
     var outputMode = "visual";
+    // Visual layout mode: "cut" (default) or "assembled".
+    var visualLayoutMode = "cut";
+    // Debug overlay mode: off by default, on shows labels/points.
+    var debugMode = false;
     var lastBindings = null;
 
     function setOutputMode(mode) {
@@ -727,6 +769,45 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
     });
     toggleTextBtn.addEventListener("click", function () {
       setOutputMode("text");
+    });
+
+    function setVisualLayoutMode(mode) {
+      visualLayoutMode = mode;
+      if (mode === "assembled") {
+        toggleLayoutAssembledBtn.className =
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
+        toggleLayoutCutBtn.className =
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
+      } else {
+        toggleLayoutAssembledBtn.className =
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
+        toggleLayoutCutBtn.className =
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
+      }
+      if (lastBindings && outputMode === "visual") showResults(lastBindings);
+    }
+
+    toggleLayoutAssembledBtn.addEventListener("click", function () {
+      setVisualLayoutMode("assembled");
+    });
+    toggleLayoutCutBtn.addEventListener("click", function () {
+      setVisualLayoutMode("cut");
+    });
+
+    function setDebugMode(enabled) {
+      debugMode = enabled;
+      if (enabled) {
+        toggleDebugBtn.className =
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary";
+      } else {
+        toggleDebugBtn.className =
+          "py-0.5 text-[10px] font-mono rounded cursor-pointer text-primary-muted-foreground/50";
+      }
+      if (lastBindings && outputMode === "visual") showResults(lastBindings);
+    }
+
+    toggleDebugBtn.addEventListener("click", function () {
+      setDebugMode(!debugMode);
     });
 
     downloadSvgBtn.addEventListener("click", function () {
@@ -835,9 +916,7 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
         var evalResult = evalIr(lastCompiledIr, currentOverrides);
         if (evalResult && evalResult.ok) {
           lastBindings = evalResult.bindings;
-          var computed = evalResult.bindings.filter(function (b) {
-            return !b.isInput;
-          });
+          var computed = evalResult.bindings.filter(isComputedDisplayBinding);
           if (outputMode === "visual") {
             renderVisual(computed);
           } else {
@@ -959,6 +1038,10 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
 
     function formatValue(binding) {
       var v = binding.value;
+      if (binding.type === "piece") {
+        // Piece members are already displayed as qualified bindings.
+        return "";
+      }
       // Bezier values come as {p1, p2, p3, p4} objects from the runtime.
       if (v !== null && typeof v === "object" && "p1" in v) {
         return (
@@ -1003,6 +1086,12 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
       return binding.type;
     }
 
+    function isComputedDisplayBinding(binding) {
+      // Inputs are rendered in the inputs panel. Omit top-level piece values
+      // from output because members are already listed individually.
+      return !binding.isInput && binding.type !== "piece";
+    }
+
     // ── SVG visual renderer ──────────────────────────────────────────────────
 
     function renderVisual(computed) {
@@ -1043,58 +1132,217 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
         visualOutput.appendChild(msg);
         return;
       }
-
-      // Compute bounding box from points, bezier control points, and line endpoints.
-      var minX = Infinity,
-        minY = Infinity,
-        maxX = -Infinity,
-        maxY = -Infinity;
-
-      function expandBounds(x, y) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
+      if (!debugMode && beziers.length === 0 && lines.length === 0) {
+        var msg = document.createElement("span");
+        msg.className = "text-xs font-mono text-primary-muted-foreground/40";
+        msg.textContent = "No lines or beziers to display";
+        visualOutput.appendChild(msg);
+        return;
       }
 
-      for (var i = 0; i < points.length; i++) {
-        expandBounds(points[i].value.x, points[i].value.y);
-      }
-      for (var i = 0; i < beziers.length; i++) {
-        var bv = beziers[i].value;
-        expandBounds(bv.p1.x, bv.p1.y);
-        expandBounds(bv.p2.x, bv.p2.y);
-        expandBounds(bv.p3.x, bv.p3.y);
-        expandBounds(bv.p4.x, bv.p4.y);
-      }
-      for (var i = 0; i < lines.length; i++) {
-        var lv = lines[i].value;
-        expandBounds(lv.start.x, lv.start.y);
-        expandBounds(lv.end.x, lv.end.y);
+      function getPieceGroupName(bindingName) {
+        var dot = bindingName.indexOf(".");
+        if (dot === -1) return "default";
+        return bindingName.slice(0, dot);
       }
 
-      var rangeX = maxX - minX;
-      var rangeY = maxY - minY;
-      if (rangeX === 0 && rangeY === 0) {
-        rangeX = 100;
-        rangeY = 100;
-        minX -= 50;
-        minY -= 50;
+      function getMemberDisplayName(bindingName) {
+        if (visualLayoutMode !== "cut") return bindingName;
+        var dot = bindingName.indexOf(".");
+        if (dot === -1) return bindingName;
+        return bindingName.slice(dot + 1);
       }
-      var maxRange = Math.max(rangeX, rangeY);
-      var pad = maxRange * 0.15;
-      if (pad < 10) pad = 10;
-
-      var vbX = minX - pad;
-      var vbY = minY - pad;
-      var vbW = rangeX + pad * 2;
-      var vbH = rangeY + pad * 2;
 
       var svgNS = "http://www.w3.org/2000/svg";
       var svg = document.createElementNS(svgNS, "svg");
-      svg.setAttribute("viewBox", vbX + " " + vbY + " " + vbW + " " + vbH);
       svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
       svg.setAttribute("class", "w-full h-full");
+
+      var groupOffsets = {};
+      var pieceLayoutGroups = [];
+      var vbX = 0;
+      var vbY = 0;
+      var vbW = 0;
+      var vbH = 0;
+
+      if (visualLayoutMode === "cut") {
+        var grouped = {};
+        var groupOrder = [];
+
+        function ensureGroup(name) {
+          var g = grouped[name];
+          if (!g) {
+            g = {
+              name: name,
+              minX: Infinity,
+              minY: Infinity,
+              maxX: -Infinity,
+              maxY: -Infinity,
+            };
+            grouped[name] = g;
+            groupOrder.push(name);
+          }
+          return g;
+        }
+
+        function expandGroup(g, x, y) {
+          if (x < g.minX) g.minX = x;
+          if (y < g.minY) g.minY = y;
+          if (x > g.maxX) g.maxX = x;
+          if (y > g.maxY) g.maxY = y;
+        }
+
+        if (debugMode) {
+          for (var i = 0; i < points.length; i++) {
+            var gp = ensureGroup(getPieceGroupName(points[i].name));
+            expandGroup(gp, points[i].value.x, points[i].value.y);
+          }
+        }
+        for (var i = 0; i < beziers.length; i++) {
+          var gb = ensureGroup(getPieceGroupName(beziers[i].name));
+          var bv = beziers[i].value;
+          expandGroup(gb, bv.p1.x, bv.p1.y);
+          expandGroup(gb, bv.p2.x, bv.p2.y);
+          expandGroup(gb, bv.p3.x, bv.p3.y);
+          expandGroup(gb, bv.p4.x, bv.p4.y);
+        }
+        for (var i = 0; i < lines.length; i++) {
+          var gl = ensureGroup(getPieceGroupName(lines[i].name));
+          var lv = lines[i].value;
+          expandGroup(gl, lv.start.x, lv.start.y);
+          expandGroup(gl, lv.end.x, lv.end.y);
+        }
+
+        var layoutPad = 24;
+        var labelBand = debugMode ? 34 : 0;
+        var groupGap = 64;
+        var cursorX = layoutPad;
+        var contentMaxY = layoutPad + labelBand;
+
+        for (var i = 0; i < groupOrder.length; i++) {
+          var group = grouped[groupOrder[i]];
+          var width = Math.max(1, group.maxX - group.minX);
+          var dx = cursorX - group.minX;
+          var dy = layoutPad + labelBand - group.minY;
+          groupOffsets[group.name] = { x: dx, y: dy };
+          group.layout = {
+            minX: group.minX + dx,
+            minY: group.minY + dy,
+            maxX: group.maxX + dx,
+            maxY: group.maxY + dy,
+          };
+          pieceLayoutGroups.push(group);
+          cursorX += width + groupGap;
+          if (group.layout.maxY > contentMaxY) contentMaxY = group.layout.maxY;
+        }
+
+        vbX = 0;
+        vbY = 0;
+        vbW = Math.max(200, cursorX - groupGap + layoutPad);
+        vbH = Math.max(140, contentMaxY + layoutPad);
+      } else {
+        // Visualize mode: keep all geometry in source-space coordinates.
+        var minX = Infinity;
+        var minY = Infinity;
+        var maxX = -Infinity;
+        var maxY = -Infinity;
+
+        function expandBounds(x, y) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+
+        if (debugMode) {
+          for (var i = 0; i < points.length; i++) {
+            expandBounds(points[i].value.x, points[i].value.y);
+          }
+        }
+        for (var i = 0; i < beziers.length; i++) {
+          var bv = beziers[i].value;
+          expandBounds(bv.p1.x, bv.p1.y);
+          expandBounds(bv.p2.x, bv.p2.y);
+          expandBounds(bv.p3.x, bv.p3.y);
+          expandBounds(bv.p4.x, bv.p4.y);
+        }
+        for (var i = 0; i < lines.length; i++) {
+          var lv = lines[i].value;
+          expandBounds(lv.start.x, lv.start.y);
+          expandBounds(lv.end.x, lv.end.y);
+        }
+
+        var rangeX = maxX - minX;
+        var rangeY = maxY - minY;
+        if (rangeX === 0 && rangeY === 0) {
+          rangeX = 100;
+          rangeY = 100;
+          minX -= 50;
+          minY -= 50;
+        }
+        var maxRange = Math.max(rangeX, rangeY);
+        var pad = maxRange * 0.15;
+        if (pad < 10) pad = 10;
+
+        vbX = minX - pad;
+        vbY = minY - pad;
+        vbW = rangeX + pad * 2;
+        vbH = rangeY + pad * 2;
+      }
+
+      // Match the viewBox aspect ratio to the output pane so the SVG fills
+      // the available width/height without leaving letterboxed bands.
+      var viewportW = visualOutput.clientWidth;
+      var viewportH = visualOutput.clientHeight;
+      if (viewportW > 0 && viewportH > 0 && vbW > 0 && vbH > 0) {
+        var targetAspect = viewportW / viewportH;
+        var boxAspect = vbW / vbH;
+        if (boxAspect > targetAspect) {
+          var expandedH = vbW / targetAspect;
+          var deltaH = expandedH - vbH;
+          vbY -= deltaH / 2;
+          vbH = expandedH;
+        } else if (boxAspect < targetAspect) {
+          var expandedW = vbH * targetAspect;
+          var deltaW = expandedW - vbW;
+          vbX -= deltaW / 2;
+          vbW = expandedW;
+        }
+      }
+
+      function withOffset(bindingName, p) {
+        var group = getPieceGroupName(bindingName);
+        var off = groupOffsets[group];
+        if (!off) return { x: p.x, y: p.y };
+        return { x: p.x + off.x, y: p.y + off.y };
+      }
+
+      function niceStep(raw) {
+        var value = Math.max(raw, 0.000001);
+        var pow10 = Math.pow(10, Math.floor(Math.log10(value)));
+        var unit = value / pow10;
+        var base = 1;
+        if (unit <= 1) {
+          base = 1;
+        } else if (unit <= 2) {
+          base = 2;
+        } else if (unit <= 5) {
+          base = 5;
+        } else {
+          base = 10;
+        }
+        return base * pow10;
+      }
+
+      function formatScaleLength(value) {
+        var rounded = Math.round(value * 10) / 10;
+        if (Math.abs(rounded - Math.round(rounded)) < 0.05) {
+          return Math.round(rounded) + " mm";
+        }
+        return rounded.toFixed(1) + " mm";
+      }
+
+      svg.setAttribute("viewBox", vbX + " " + vbY + " " + vbW + " " + vbH);
 
       var scale = Math.max(vbW, vbH);
       var dotR = scale * 0.008;
@@ -1102,28 +1350,110 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
       var strokeW = scale * 0.004;
       var labelOffset = dotR + fontSize * 1.2;
 
+      // Draw an adaptive background grid for scale readability.
+      var minorGridStep = niceStep(Math.max(vbW, vbH) / 26);
+      var majorGridStep = minorGridStep * 5;
+      var minorGridPatternId = "grid-minor";
+      var majorGridPatternId = "grid-major";
+      var defs = document.createElementNS(svgNS, "defs");
+
+      var minorPattern = document.createElementNS(svgNS, "pattern");
+      minorPattern.setAttribute("id", minorGridPatternId);
+      minorPattern.setAttribute("patternUnits", "userSpaceOnUse");
+      minorPattern.setAttribute("width", minorGridStep);
+      minorPattern.setAttribute("height", minorGridStep);
+      var minorPath = document.createElementNS(svgNS, "path");
+      minorPath.setAttribute(
+        "d",
+        "M " + minorGridStep + " 0 L 0 0 0 " + minorGridStep,
+      );
+      minorPath.setAttribute("fill", "none");
+      minorPath.setAttribute("stroke", "currentColor");
+      minorPath.setAttribute("stroke-width", strokeW * 0.25);
+      minorPath.setAttribute("class", "text-primary-muted-foreground/20");
+      minorPattern.appendChild(minorPath);
+      defs.appendChild(minorPattern);
+
+      var majorPattern = document.createElementNS(svgNS, "pattern");
+      majorPattern.setAttribute("id", majorGridPatternId);
+      majorPattern.setAttribute("patternUnits", "userSpaceOnUse");
+      majorPattern.setAttribute("width", majorGridStep);
+      majorPattern.setAttribute("height", majorGridStep);
+      var majorPath = document.createElementNS(svgNS, "path");
+      majorPath.setAttribute(
+        "d",
+        "M " + majorGridStep + " 0 L 0 0 0 " + majorGridStep,
+      );
+      majorPath.setAttribute("fill", "none");
+      majorPath.setAttribute("stroke", "currentColor");
+      majorPath.setAttribute("stroke-width", strokeW * 0.45);
+      majorPath.setAttribute("class", "text-primary-muted-foreground/30");
+      majorPattern.appendChild(majorPath);
+      defs.appendChild(majorPattern);
+      svg.appendChild(defs);
+
+      var minorGrid = document.createElementNS(svgNS, "rect");
+      minorGrid.setAttribute("x", vbX);
+      minorGrid.setAttribute("y", vbY);
+      minorGrid.setAttribute("width", vbW);
+      minorGrid.setAttribute("height", vbH);
+      minorGrid.setAttribute("fill", "url(#" + minorGridPatternId + ")");
+      svg.appendChild(minorGrid);
+
+      var majorGrid = document.createElementNS(svgNS, "rect");
+      majorGrid.setAttribute("x", vbX);
+      majorGrid.setAttribute("y", vbY);
+      majorGrid.setAttribute("width", vbW);
+      majorGrid.setAttribute("height", vbH);
+      majorGrid.setAttribute("fill", "url(#" + majorGridPatternId + ")");
+      svg.appendChild(majorGrid);
+
+      if (visualLayoutMode === "cut" && debugMode) {
+        for (var i = 0; i < pieceLayoutGroups.length; i++) {
+          var piece = pieceLayoutGroups[i];
+          var label = document.createElementNS(svgNS, "text");
+          var labelY = piece.layout.minY - Math.max(fontSize * 1.4, 10);
+          label.setAttribute("x", (piece.layout.minX + piece.layout.maxX) / 2);
+          label.setAttribute("y", labelY);
+          label.setAttribute("text-anchor", "middle");
+          label.setAttribute("font-size", fontSize * 1.05);
+          label.setAttribute(
+            "font-family",
+            "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
+          );
+          label.setAttribute("fill", "currentColor");
+          label.setAttribute("class", "text-primary-muted-foreground/70");
+          label.textContent = piece.name;
+          svg.appendChild(label);
+        }
+      }
+
       // Draw bezier curves first (behind points).
       for (var i = 0; i < beziers.length; i++) {
-        var bz = beziers[i].value;
+        var bzi = beziers[i];
+        var bz1 = withOffset(bzi.name, bzi.value.p1);
+        var bz2 = withOffset(bzi.name, bzi.value.p2);
+        var bz3 = withOffset(bzi.name, bzi.value.p3);
+        var bz4 = withOffset(bzi.name, bzi.value.p4);
         var path = document.createElementNS(svgNS, "path");
         path.setAttribute(
           "d",
           "M " +
-            bz.p1.x +
+            bz1.x +
             " " +
-            bz.p1.y +
+            bz1.y +
             " C " +
-            bz.p2.x +
+            bz2.x +
             " " +
-            bz.p2.y +
+            bz2.y +
             ", " +
-            bz.p3.x +
+            bz3.x +
             " " +
-            bz.p3.y +
+            bz3.y +
             ", " +
-            bz.p4.x +
+            bz4.x +
             " " +
-            bz.p4.y,
+            bz4.y,
         );
         path.setAttribute("fill", "none");
         path.setAttribute("stroke", "currentColor");
@@ -1132,43 +1462,47 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
         path.setAttribute("stroke-linecap", "round");
         svg.appendChild(path);
 
-        // Draw a label at the curve midpoint (t=0.5).
-        var t = 0.5;
-        var mt = 1 - t;
-        var mx =
-          mt * mt * mt * bz.p1.x +
-          3 * mt * mt * t * bz.p2.x +
-          3 * mt * t * t * bz.p3.x +
-          t * t * t * bz.p4.x;
-        var my =
-          mt * mt * mt * bz.p1.y +
-          3 * mt * mt * t * bz.p2.y +
-          3 * mt * t * t * bz.p3.y +
-          t * t * t * bz.p4.y;
+        if (debugMode) {
+          // Draw a label at the curve midpoint (t=0.5).
+          var t = 0.5;
+          var mt = 1 - t;
+          var mx =
+            mt * mt * mt * bz1.x +
+            3 * mt * mt * t * bz2.x +
+            3 * mt * t * t * bz3.x +
+            t * t * t * bz4.x;
+          var my =
+            mt * mt * mt * bz1.y +
+            3 * mt * mt * t * bz2.y +
+            3 * mt * t * t * bz3.y +
+            t * t * t * bz4.y;
 
-        var text = document.createElementNS(svgNS, "text");
-        text.setAttribute("x", mx);
-        text.setAttribute("y", my - labelOffset);
-        text.setAttribute("text-anchor", "middle");
-        text.setAttribute("font-size", fontSize);
-        text.setAttribute(
-          "font-family",
-          "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
-        );
-        text.setAttribute("fill", "currentColor");
-        text.setAttribute("class", "text-primary-muted-foreground/50");
-        text.textContent = beziers[i].name;
-        svg.appendChild(text);
+          var text = document.createElementNS(svgNS, "text");
+          text.setAttribute("x", mx);
+          text.setAttribute("y", my - labelOffset);
+          text.setAttribute("text-anchor", "middle");
+          text.setAttribute("font-size", fontSize);
+          text.setAttribute(
+            "font-family",
+            "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
+          );
+          text.setAttribute("fill", "currentColor");
+          text.setAttribute("class", "text-primary-muted-foreground/50");
+          text.textContent = getMemberDisplayName(bzi.name);
+          svg.appendChild(text);
+        }
       }
 
       // Draw line segments.
       for (var i = 0; i < lines.length; i++) {
-        var ln = lines[i].value;
+        var lineBinding = lines[i];
+        var start = withOffset(lineBinding.name, lineBinding.value.start);
+        var end = withOffset(lineBinding.name, lineBinding.value.end);
         var lineEl = document.createElementNS(svgNS, "line");
-        lineEl.setAttribute("x1", ln.start.x);
-        lineEl.setAttribute("y1", ln.start.y);
-        lineEl.setAttribute("x2", ln.end.x);
-        lineEl.setAttribute("y2", ln.end.y);
+        lineEl.setAttribute("x1", start.x);
+        lineEl.setAttribute("y1", start.y);
+        lineEl.setAttribute("x2", end.x);
+        lineEl.setAttribute("y2", end.y);
         lineEl.setAttribute("fill", "none");
         lineEl.setAttribute("stroke", "currentColor");
         lineEl.setAttribute("stroke-width", strokeW);
@@ -1176,67 +1510,129 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
         lineEl.setAttribute("stroke-linecap", "round");
         svg.appendChild(lineEl);
 
-        // Draw a label at the midpoint.
-        var lmx = (ln.start.x + ln.end.x) / 2;
-        var lmy = (ln.start.y + ln.end.y) / 2;
+        if (debugMode) {
+          // Draw a label at the midpoint.
+          var lmx = (start.x + end.x) / 2;
+          var lmy = (start.y + end.y) / 2;
 
-        var lineLabel = document.createElementNS(svgNS, "text");
-        lineLabel.setAttribute("x", lmx);
-        lineLabel.setAttribute("y", lmy - labelOffset);
-        lineLabel.setAttribute("text-anchor", "middle");
-        lineLabel.setAttribute("font-size", fontSize);
-        lineLabel.setAttribute(
-          "font-family",
-          "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
-        );
-        lineLabel.setAttribute("fill", "currentColor");
-        lineLabel.setAttribute("class", "text-primary-muted-foreground/50");
-        lineLabel.textContent = lines[i].name;
-        svg.appendChild(lineLabel);
+          var lineLabel = document.createElementNS(svgNS, "text");
+          lineLabel.setAttribute("x", lmx);
+          lineLabel.setAttribute("y", lmy - labelOffset);
+          lineLabel.setAttribute("text-anchor", "middle");
+          lineLabel.setAttribute("font-size", fontSize);
+          lineLabel.setAttribute(
+            "font-family",
+            "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
+          );
+          lineLabel.setAttribute("fill", "currentColor");
+          lineLabel.setAttribute("class", "text-primary-muted-foreground/50");
+          lineLabel.textContent = getMemberDisplayName(lineBinding.name);
+          svg.appendChild(lineLabel);
+        }
       }
 
-      // Draw dots and labels.
-      for (var i = 0; i < points.length; i++) {
-        var pt = points[i];
-        var cx = pt.value.x;
-        var cy = pt.value.y;
+      if (debugMode) {
+        // Draw dots and labels.
+        for (var i = 0; i < points.length; i++) {
+          var pt = points[i];
+          var offsetPt = withOffset(pt.name, pt.value);
+          var cx = offsetPt.x;
+          var cy = offsetPt.y;
 
-        var g = document.createElementNS(svgNS, "g");
-        g.setAttribute("class", "svg-point");
-        g.style.cursor = "pointer";
+          var g = document.createElementNS(svgNS, "g");
+          g.setAttribute("class", "svg-point");
+          g.style.cursor = "pointer";
 
-        // Invisible hit area for easier hover interaction.
-        var hitArea = document.createElementNS(svgNS, "circle");
-        hitArea.setAttribute("cx", cx);
-        hitArea.setAttribute("cy", cy);
-        hitArea.setAttribute("r", dotR * 6);
-        hitArea.setAttribute("fill", "transparent");
-        g.appendChild(hitArea);
+          // Invisible hit area for easier hover interaction.
+          var hitArea = document.createElementNS(svgNS, "circle");
+          hitArea.setAttribute("cx", cx);
+          hitArea.setAttribute("cy", cy);
+          hitArea.setAttribute("r", dotR * 6);
+          hitArea.setAttribute("fill", "transparent");
+          g.appendChild(hitArea);
 
-        var circle = document.createElementNS(svgNS, "circle");
-        circle.setAttribute("cx", cx);
-        circle.setAttribute("cy", cy);
-        circle.setAttribute("r", dotR);
-        circle.setAttribute("fill", "currentColor");
-        circle.setAttribute("class", "text-primary");
-        g.appendChild(circle);
+          var circle = document.createElementNS(svgNS, "circle");
+          circle.setAttribute("cx", cx);
+          circle.setAttribute("cy", cy);
+          circle.setAttribute("r", dotR);
+          circle.setAttribute("fill", "currentColor");
+          circle.setAttribute("class", "text-primary");
+          g.appendChild(circle);
 
-        var text = document.createElementNS(svgNS, "text");
-        text.setAttribute("x", cx);
-        text.setAttribute("y", cy - labelOffset);
-        text.setAttribute("text-anchor", "middle");
-        text.setAttribute("font-size", fontSize);
-        text.setAttribute(
-          "font-family",
-          "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
-        );
-        text.setAttribute("fill", "currentColor");
-        text.setAttribute("class", "text-primary-muted-foreground/70");
-        text.textContent = pt.name;
-        g.appendChild(text);
+          var text = document.createElementNS(svgNS, "text");
+          text.setAttribute("x", cx);
+          text.setAttribute("y", cy - labelOffset);
+          text.setAttribute("text-anchor", "middle");
+          text.setAttribute("font-size", fontSize);
+          text.setAttribute(
+            "font-family",
+            "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
+          );
+          text.setAttribute("fill", "currentColor");
+          text.setAttribute("class", "text-primary-muted-foreground/70");
+          text.textContent = getMemberDisplayName(pt.name);
+          g.appendChild(text);
 
-        svg.appendChild(g);
+          svg.appendChild(g);
+        }
       }
+
+      // Bottom-anchored scale reference line.
+      var scaleMargin = Math.max(strokeW * 5, 10);
+      var scaleLength = niceStep(vbW / 7);
+      var maxScaleLength = Math.max((vbW - scaleMargin * 2) * 0.35, 1);
+      if (scaleLength > maxScaleLength) {
+        scaleLength = niceStep(maxScaleLength);
+      }
+      var scaleY = vbY + vbH - scaleMargin;
+      var scaleX1 = vbX + scaleMargin;
+      var scaleX2 = scaleX1 + scaleLength;
+      var tickH = Math.max(strokeW * 3, 5);
+
+      var scaleLine = document.createElementNS(svgNS, "line");
+      scaleLine.setAttribute("x1", scaleX1);
+      scaleLine.setAttribute("y1", scaleY);
+      scaleLine.setAttribute("x2", scaleX2);
+      scaleLine.setAttribute("y2", scaleY);
+      scaleLine.setAttribute("stroke", "currentColor");
+      scaleLine.setAttribute("stroke-width", strokeW * 0.9);
+      scaleLine.setAttribute("stroke-linecap", "round");
+      scaleLine.setAttribute("class", "text-primary-muted-foreground/80");
+      svg.appendChild(scaleLine);
+
+      var scaleTickLeft = document.createElementNS(svgNS, "line");
+      scaleTickLeft.setAttribute("x1", scaleX1);
+      scaleTickLeft.setAttribute("y1", scaleY - tickH / 2);
+      scaleTickLeft.setAttribute("x2", scaleX1);
+      scaleTickLeft.setAttribute("y2", scaleY + tickH / 2);
+      scaleTickLeft.setAttribute("stroke", "currentColor");
+      scaleTickLeft.setAttribute("stroke-width", strokeW * 0.9);
+      scaleTickLeft.setAttribute("class", "text-primary-muted-foreground/80");
+      svg.appendChild(scaleTickLeft);
+
+      var scaleTickRight = document.createElementNS(svgNS, "line");
+      scaleTickRight.setAttribute("x1", scaleX2);
+      scaleTickRight.setAttribute("y1", scaleY - tickH / 2);
+      scaleTickRight.setAttribute("x2", scaleX2);
+      scaleTickRight.setAttribute("y2", scaleY + tickH / 2);
+      scaleTickRight.setAttribute("stroke", "currentColor");
+      scaleTickRight.setAttribute("stroke-width", strokeW * 0.9);
+      scaleTickRight.setAttribute("class", "text-primary-muted-foreground/80");
+      svg.appendChild(scaleTickRight);
+
+      var scaleLabel = document.createElementNS(svgNS, "text");
+      scaleLabel.setAttribute("x", (scaleX1 + scaleX2) / 2);
+      scaleLabel.setAttribute("y", scaleY - Math.max(fontSize * 0.5, 4));
+      scaleLabel.setAttribute("text-anchor", "middle");
+      scaleLabel.setAttribute("font-size", fontSize * 0.9);
+      scaleLabel.setAttribute(
+        "font-family",
+        "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace",
+      );
+      scaleLabel.setAttribute("fill", "currentColor");
+      scaleLabel.setAttribute("class", "text-primary-muted-foreground/80");
+      scaleLabel.textContent = formatScaleLength(scaleLength);
+      svg.appendChild(scaleLabel);
 
       visualOutput.appendChild(svg);
     }
@@ -1278,10 +1674,7 @@ const sources = { tshirt: tshirtKtr, petal: petalKtr };
     // ── Show / hide results ──────────────────────────────────────────────────
 
     function showResults(bindings) {
-      // Filter out input bindings — they're shown in the inputs panel.
-      var computed = bindings.filter(function (b) {
-        return !b.isInput;
-      });
+      var computed = bindings.filter(isComputedDisplayBinding);
       lastBindings = bindings;
 
       if (computed.length === 0) {

@@ -63,7 +63,7 @@ let x = 100mm  // inline comment
 ### 2.3 Keywords
 
 ```
-let  input  fn  return  search  bounds  tolerance  require  export  as  assert
+let  input  fn  return  search  bounds  tolerance  require  export  as  assert  piece
 ```
 
 Keywords are reserved and cannot be used as identifiers.
@@ -120,6 +120,7 @@ program          = { statement } ;
 statement        = let_statement
                  | input_decl
                  | fn_def
+                 | piece_def
                  | export_stmt ;
 
 (* ------------------------------------------------------------------ *)
@@ -153,6 +154,14 @@ param            = IDENT , ":" , type_name ;
 fn_body          = { let_statement } , return_stmt ;
 
 return_stmt      = "return" , expression ;
+
+(* ------------------------------------------------------------------ *)
+(* Piece definitions                                                   *)
+(* ------------------------------------------------------------------ *)
+
+piece_def        = "piece" , IDENT , "{" , { piece_member } , "}" ;
+
+piece_member     = IDENT , "=" , expression ;
 
 (* ------------------------------------------------------------------ *)
 (* Search (solver) blocks                                              *)
@@ -204,11 +213,14 @@ primary_expr     = DIMENSION                         (* 100mm              *)
                  | PERCENTAGE                        (* 50%                *)
                  | NUMBER                            (* 42, 3.14           *)
                  | fn_call                           (* point(x, y)        *)
+                 | piece_expr                        (* piece { ... }      *)
                  | search_expr                       (* search (t) { ... } *)
                  | IDENT                             (* head               *)
                  | "(" , expression , ")" ;          (* grouping           *)
 
 fn_call          = IDENT , "(" , [ arg_list ] , ")" ;
+
+piece_expr       = "piece" , "{" , { piece_member } , "}" ;
 
 arg_list         = expression , { "," , expression } ;
 
@@ -222,6 +234,7 @@ type_name        = "f64"
                  | "point"
                  | "bezier"
                  | "line"
+                 | "piece"
                  | "bool" ;
 ```
 
@@ -249,6 +262,7 @@ Comparison operators (`==`, `>`, `<`, etc.) appear only in `assert` and
 | `point`      | 2D coordinate `(x: length, y: length)`              |
 | `bezier`     | Cubic Bezier curve (4 control points)               |
 | `line`       | Straight segment between two points                 |
+| `piece`      | Named collection of member bindings                 |
 | `bool`       | Boolean (internal to assertions/requires)           |
 
 ### 4.1 Units
@@ -323,6 +337,22 @@ Functions take typed parameters and contain a sequence of `let` bindings
 followed by a single `return` expression. Functions may reference inputs
 and other top-level bindings. Recursion is not supported.
 
+Functions can also return a `piece` by returning an anonymous piece expression:
+
+```ktr
+fn make_sleeve(width: length, height: length) {
+  return piece {
+    top_left = point(0mm, 0mm)
+    top_right = point(width, 0mm)
+    bottom_left = point(0mm, height)
+    bottom_right = point(width, height)
+  }
+}
+
+let sleeve = make_sleeve(200mm, 400mm)
+let y = sleeve.top_left.y
+```
+
 ### 5.4 Search (Solver)
 
 ```ktr
@@ -337,7 +367,33 @@ A `search` expression declares a solver variable. The runtime finds a
 value for the parameter within the given `bounds` such that the `require`
 constraint is satisfied within the given `tolerance`.
 
-### 5.5 Exports
+### 5.5 Pieces
+
+```ktr
+piece neckhole {
+  top_left = point(armhole_depth + shoulder_width, 0mm)
+  top_right = point(chest_width - armhole_depth - shoulder_width, 0mm)
+  curve = bezier(top_left, neck_cp1, neck_cp2, top_right)
+}
+
+let x = neckhole.top_left.x
+```
+
+A `piece` defines a named, scoped collection of member bindings. Inside a piece
+body, members are written as `name = expression` (without `let`) and are visible
+in definition order. Members may reference:
+
+- Earlier members in the same piece by bare name.
+- External bindings (inputs, top-level lets, function results, etc.).
+
+Outside the piece body, members are accessed through qualified field access
+(`piece_name.member_name`). Piece member names do not leak into the enclosing
+scope.
+
+`piece` also has an expression form (`piece { ... }`) that constructs an
+anonymous piece value. This is most useful as a function return value.
+
+### 5.6 Exports
 
 ```ktr
 export neck_quarter(tweak) as "Neck Curve"
@@ -385,6 +441,19 @@ chained (e.g., `some_line.point1.x`).
 | `.point2` | `point` | Second control point            |
 | `.point3` | `point` | Third control point             |
 | `.point4` | `point` | Fourth control point (end)      |
+
+#### Piece Fields
+
+For a `piece`, available fields are exactly the members declared in its body.
+For example, with:
+
+```ktr
+piece sleeve {
+  top_left = point(0mm, 0mm)
+}
+```
+
+`sleeve.top_left` has type `point` and can be chained (`sleeve.top_left.x`).
 
 ### 6.3 Point Methods
 
@@ -478,6 +547,9 @@ The compiler currently implements the following subset:
 - [x] `fn` definitions with typed parameters
 - [x] Function calls (user-defined and built-in constructors)
 - [x] Field accessors (`.x`, `.y`, `.point1`, etc.) with chaining
+- [x] Top-level `piece` definitions with typed member access (`piece.member`)
+- [x] Anonymous `piece { ... }` expressions
+- [x] Functions returning `piece` values
 
 Planned (not yet implemented):
 

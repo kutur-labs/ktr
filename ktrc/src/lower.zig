@@ -12,6 +12,7 @@ const Type = ir.Type;
 const Op = ir.Op;
 const Operand = ir.Operand;
 const Input = ir.Input;
+const PieceDef = ir.PieceDef;
 
 /// Map a sema type to an IR type. Poison must never reach this point.
 /// Derived at comptime via tag names so new non-poison types are mapped
@@ -47,6 +48,16 @@ const Lowerer = struct {
             .div => .div,
             else => unreachable,
         };
+    }
+
+    fn isTopLevelPieceRef(self: *Lowerer, node_index: ast.NodeIndex) bool {
+        const node = self.tree.nodes.get(node_index);
+        if (node.tag != .identifier_ref) return false;
+        const name = self.tree.tokenSlice(node.main_token);
+        const sym = self.sema_result.symbols.get(name) orelse return false;
+        if (sym.ty != .piece) return false;
+        const def_node = self.tree.nodes.get(sym.node);
+        return def_node.tag == .piece_def;
     }
 
     /// Look up the IR type for an expression node via the sema result.
@@ -106,11 +117,26 @@ const Lowerer = struct {
                 const field_name = self.tree.tokenSlice(node.main_token + 1);
                 const base_sema_ty = self.sema_result.node_types[node.data.lhs];
                 const base_ir_ty = mapType(base_sema_ty);
+                if (base_ir_ty == .piece) {
+                    if (self.isTopLevelPieceRef(node.data.lhs)) {
+                        const base_name = switch (base_operand) {
+                            .ref => |r| r,
+                            .literal => unreachable,
+                        };
+                        return .{
+                            .ref = try std.fmt.allocPrint(self.ally, "{s}.{s}", .{ base_name, field_name }),
+                        };
+                    }
+                    const operands = try self.ally.alloc(Operand, 2);
+                    operands[0] = base_operand;
+                    operands[1] = .{ .ref = try self.ally.dupe(u8, field_name) };
+                    return self.emitBuiltin(.piece_member, operands, node_index);
+                }
                 const info = ir.lookupField(base_ir_ty, field_name).?;
                 const operands = try self.ally.dupe(Operand, &.{base_operand});
                 return self.emitBuiltin(info.op, operands, node_index);
             },
-            .root, .let_statement, .input_statement, .fn_def, .param, .return_stmt => unreachable,
+            .root, .let_statement, .input_statement, .fn_def, .piece_def, .piece_member, .param, .return_stmt, .piece_expr => unreachable,
         };
     }
 
@@ -178,6 +204,19 @@ const Lowerer = struct {
             .temp_counter = 0,
         };
 
+        const is_piece_return_fn = fn_sig.ret_ty == .piece and self.tree.nodes.get(return_expr).tag == .piece_expr;
+        if (is_piece_return_fn) {
+            try self.lowerPieceMembers(&sub, self.tree.pieceExprMembers(return_expr));
+
+            return .{
+                .name = fn_name,
+                .params = params,
+                .ret_ty = .piece,
+                .body = try sub.instructions.toOwnedSlice(self.ally),
+                .ret = try self.ally.dupe(u8, ""),
+            };
+        }
+
         // Lower body let-statements using AST node types directly.
         for (body_nodes) |stmt_idx| {
             const stmt_node = self.tree.nodes.get(stmt_idx);
@@ -221,6 +260,45 @@ const Lowerer = struct {
             .ret_ty = ret_ty,
             .body = try sub.instructions.toOwnedSlice(self.ally),
             .ret = ret_name,
+        };
+    }
+
+    /// Lower piece member nodes into instructions on a sub-lowerer.
+    /// Shared by `lowerPieceDef` and the piece-return branch of `lowerFnDef`.
+    fn lowerPieceMembers(self: *Lowerer, sub: *Lowerer, member_nodes: []const ast.NodeIndex) LowerError!void {
+        for (member_nodes) |member_idx| {
+            const member_node = self.tree.nodes.get(member_idx);
+            const member_name = self.tree.tokenSlice(member_node.main_token);
+            const member_expr = member_node.data.lhs;
+            const member_ty = self.sema_result.node_types[member_expr];
+            try sub.lowerLet(member_name, .{
+                .ty = member_ty,
+                .node = member_idx,
+                .kind = .let_binding,
+            });
+        }
+    }
+
+    /// Lower a top-level piece definition into an `ir.PieceDef`.
+    fn lowerPieceDef(self: *Lowerer, piece_def_index: ast.NodeIndex) LowerError!PieceDef {
+        const piece_node = self.tree.nodes.get(piece_def_index);
+        const piece_name = try self.ally.dupe(u8, self.tree.tokenSlice(piece_node.main_token + 1));
+        const member_nodes = self.tree.pieceDefMembers(piece_def_index);
+
+        var sub = Lowerer{
+            .tree = self.tree,
+            .sema_result = self.sema_result,
+            .ally = self.ally,
+            .inputs = .{},
+            .instructions = .{},
+            .temp_counter = 0,
+        };
+
+        try self.lowerPieceMembers(&sub, member_nodes);
+
+        return .{
+            .name = piece_name,
+            .members = try sub.instructions.toOwnedSlice(self.ally),
         };
     }
 
@@ -301,6 +379,7 @@ pub fn lower(gpa: std.mem.Allocator, tree: *const Ast, sema_result: *const Sema)
     };
 
     var fn_defs = std.ArrayListUnmanaged(ir.FnDef){};
+    var piece_defs = std.ArrayListUnmanaged(PieceDef){};
 
     // Iterate root AST statements in order to preserve topo-sort.
     const statements = tree.rootStatements(0);
@@ -321,6 +400,10 @@ pub fn lower(gpa: std.mem.Allocator, tree: *const Ast, sema_result: *const Sema)
                 const fn_def = try l.lowerFnDef(stmt_index);
                 try fn_defs.append(ally, fn_def);
             },
+            .piece_def => {
+                const piece_def = try l.lowerPieceDef(stmt_index);
+                try piece_defs.append(ally, piece_def);
+            },
             else => {},
         }
     }
@@ -329,6 +412,7 @@ pub fn lower(gpa: std.mem.Allocator, tree: *const Ast, sema_result: *const Sema)
         .version = 1,
         .inputs = try l.inputs.toOwnedSlice(ally),
         .functions = try fn_defs.toOwnedSlice(ally),
+        .pieces = try piece_defs.toOwnedSlice(ally),
         .instructions = try l.instructions.toOwnedSlice(ally),
         .arena = arena,
     };
@@ -1062,6 +1146,188 @@ test "lower: chained line.point1.x" {
         .builtin => |b| {
             try std.testing.expectEqual(Op.point_x, b.op);
         },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: piece_def lowers to piece members" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\piece neckhole {
+        \\  top_left = point(0mm, 0mm)
+        \\  top_right = point(top_left.x, 0mm)
+        \\}
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.pieces.len);
+    try std.testing.expectEqualStrings("neckhole", result.pieces[0].name);
+    try std.testing.expectEqual(@as(usize, 3), result.pieces[0].members.len);
+    try std.testing.expectEqualStrings("top_left", result.pieces[0].members[0].name);
+    try std.testing.expectEqual(Type.point, result.pieces[0].members[0].ty);
+    try std.testing.expectEqualStrings("top_right", result.pieces[0].members[2].name);
+    try std.testing.expectEqual(Type.point, result.pieces[0].members[2].ty);
+}
+
+test "lower: piece member access lowers as qualified ref" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\piece neckhole {
+        \\  top_left = point(100mm, 50mm)
+        \\}
+        \\let x = neckhole.top_left.x
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.instructions.len);
+    const inst = result.instructions[0];
+    try std.testing.expectEqualStrings("x", inst.name);
+    try std.testing.expectEqual(Type.length, inst.ty);
+
+    switch (inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point_x, b.op);
+            try std.testing.expectEqual(@as(usize, 1), b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("neckhole.top_left", b.operands[0].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: piece member may reference external bindings" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\input chest = 900mm
+        \\piece neckhole {
+        \\  top_left = point(chest, 0mm)
+        \\}
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.inputs.len);
+    try std.testing.expectEqual(@as(usize, 1), result.pieces.len);
+    try std.testing.expectEqual(@as(usize, 1), result.pieces[0].members.len);
+
+    const top_left = result.pieces[0].members[0];
+    try std.testing.expectEqualStrings("top_left", top_left.name);
+    try std.testing.expectEqual(Type.point, top_left.ty);
+    switch (top_left.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.point, b.op);
+            try std.testing.expectEqual(@as(usize, 2), b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("chest", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .literal);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: piece-returning fn lowers piece expression members" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn make_piece() {
+        \\  return piece {
+        \\    top_left = point(0mm, 0mm)
+        \\    top_right = point(100mm, 0mm)
+        \\  }
+        \\}
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.functions.len);
+    const fn_def = result.functions[0];
+    try std.testing.expectEqualStrings("make_piece", fn_def.name);
+    try std.testing.expectEqual(Type.piece, fn_def.ret_ty);
+    try std.testing.expectEqualStrings("", fn_def.ret);
+    try std.testing.expectEqual(@as(usize, 2), fn_def.body.len);
+    try std.testing.expectEqualStrings("top_left", fn_def.body[0].name);
+    try std.testing.expectEqualStrings("top_right", fn_def.body[1].name);
+}
+
+test "lower: piece field access on call emits piece_member op" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn make_piece() {
+        \\  return piece {
+        \\    top_left = point(100mm, 50mm)
+        \\  }
+        \\}
+        \\let x = make_piece().top_left.x
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.functions.len);
+    try std.testing.expectEqual(@as(usize, 3), result.instructions.len);
+
+    const piece_member_inst = result.instructions[1];
+    switch (piece_member_inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.piece_member, b.op);
+            try std.testing.expectEqual(@as(usize, 2), b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("0", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("top_left", b.operands[1].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const x_inst = result.instructions[2];
+    try std.testing.expectEqualStrings("x", x_inst.name);
+    switch (x_inst.rhs) {
+        .builtin => |b| try std.testing.expectEqual(Op.point_x, b.op),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "lower: piece member chaining via piece-valued let" {
+    const allocator = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn make_piece() {
+        \\  return piece {
+        \\    top_left = point(100mm, 50mm)
+        \\  }
+        \\}
+        \\let sleeve = make_piece()
+        \\let y = sleeve.top_left.y
+    ;
+    var result = try lowerSource(allocator, source);
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), result.functions.len);
+    try std.testing.expectEqual(@as(usize, 3), result.instructions.len);
+
+    const sleeve_inst = result.instructions[0];
+    try std.testing.expectEqualStrings("sleeve", sleeve_inst.name);
+    switch (sleeve_inst.rhs) {
+        .call => |c| try std.testing.expectEqualStrings("make_piece", c.func),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const piece_member_inst = result.instructions[1];
+    switch (piece_member_inst.rhs) {
+        .builtin => |b| {
+            try std.testing.expectEqual(Op.piece_member, b.op);
+            try std.testing.expectEqual(@as(usize, 2), b.operands.len);
+            try std.testing.expect(b.operands[0] == .ref);
+            try std.testing.expectEqualStrings("sleeve", b.operands[0].ref);
+            try std.testing.expect(b.operands[1] == .ref);
+            try std.testing.expectEqualStrings("top_left", b.operands[1].ref);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+
+    const y_inst = result.instructions[2];
+    try std.testing.expectEqualStrings("y", y_inst.name);
+    switch (y_inst.rhs) {
+        .builtin => |b| try std.testing.expectEqual(Op.point_y, b.op),
         else => return error.TestUnexpectedResult,
     }
 }

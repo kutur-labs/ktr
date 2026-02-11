@@ -17,6 +17,7 @@ header           = "#" , "ktr-ir" , "v" , INTEGER , NEWLINE ;
 top_level        = input
                  | assert
                  | fn_def
+                 | piece_def
                  | search
                  | instruction
                  | export
@@ -30,9 +31,10 @@ top_level        = input
 (*   1. Header         -- version, optional metadata                  *)
 (*   2. Inputs         -- parametric measurements + assertions        *)
 (*   3. Functions      -- callable blocks                             *)
-(*   4. Searches       -- solver blocks                               *)
-(*   5. Top-level      -- instructions using resolved values          *)
-(*   6. Exports        -- what the runtime should render/output       *)
+(*   4. Pieces         -- top-level named piece blocks                *)
+(*   5. Searches       -- solver blocks                               *)
+(*   6. Top-level      -- instructions using resolved values          *)
+(*   7. Exports        -- what the runtime should render/output       *)
 (*                                                                    *)
 (* Each section only references names defined in earlier sections or  *)
 (* in its own scope.                                                  *)
@@ -61,9 +63,23 @@ param_list       = param , { "," , param } ;
 
 param            = ref , ":" , type ;
 
-fn_body          = { instruction } , ret ;
+fn_body          = ( { instruction } , ret )         (* non-piece return *)
+                 | piece_fn_body ;                   (* piece return     *)
+
+piece_fn_body    = { instruction } ;                 (* ret is omitted when return type is piece *)
 
 ret              = "ret" , ref , NEWLINE ;
+
+
+(* ------------------------------------------------------------------ *)
+(* Pieces                                                              *)
+(* ------------------------------------------------------------------ *)
+
+piece_def        = "piece" , IDENT , NEWLINE ,
+                   piece_body ,
+                   "end" , NEWLINE ;
+
+piece_body       = { instruction } ;
 
 
 (* ------------------------------------------------------------------ *)
@@ -111,7 +127,9 @@ export           = "export" , ref , STRING , NEWLINE ;
 
 operand          = ref | literal ;
 
-ref              = "%" , ( IDENT | INTEGER ) ;
+ref              = "%" , ref_part , { "." , ref_part } ;
+
+ref_part         = IDENT | INTEGER ;
 
 literal          = NUMBER , [ UNIT ] ;
 
@@ -126,15 +144,17 @@ type             = "f64"
                  | "point"
                  | "bezier"
                  | "line"
+                 | "piece"
                  | "bool" ;
 
 cmp_op           = "eq" | "ne" | "gt" | "lt" | "gte" | "lte" ;
 
 builtin          = "add" | "sub" | "mul" | "div"
                  | "point" | "bezier" | "line"
-                 | "shift_up" | "shift_down" | "shift_left" | "shift_right"
-                 | "dx" | "dy"
-                 | "curve_length" ;
+                 | "point_x" | "point_y"
+                 | "line_p1" | "line_p2"
+                 | "bezier_p1" | "bezier_p2" | "bezier_p3" | "bezier_p4"
+                 | "piece_member" ;
 
 
 (* ------------------------------------------------------------------ *)
